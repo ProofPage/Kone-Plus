@@ -1,9 +1,13 @@
 // ==UserScript==
 // @name         Kone Plus
-// @namespace    https://kone.gg/
-// @version      3.0
+// @namespace    https://github.com/ProofPage/Kone-Plus
+// @version      3.0.0
 // @description  Base64 decoder for kone.gg and password auto-fill for file hosts (kio, mega, pikpak, gofile, transfer, etc.)
-// @author       KRUI / Mod
+// @author       Page
+// @homepageURL  https://github.com/ProofPage/Kone-Plus
+// @supportURL   https://github.com/ProofPage/Kone-Plus/issues
+// @updateURL    https://raw.githubusercontent.com/ProofPage/Kone-Plus/main/Kone_Plus.user.js
+// @downloadURL  https://raw.githubusercontent.com/ProofPage/Kone-Plus/main/Kone_Plus.user.js
 // @match        *://kone.gg/*
 // @match        *://*.kone.gg/*
 // @match        *://kio.ac/*

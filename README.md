@@ -43,12 +43,12 @@ A powerful and lightweight userscript designed for **[kone.gg](https://kone.gg/)
 ## 🚀 Installation
 
 1. Install a userscript manager extension in your browser:
-   - [Tampermonkey](https://www.tampermonkey.net/) (Recommended for Chrome, Firefox, Edge, Safari, Samsung Internet)
-   - [Violentmonkey](https://violentmonkey.github.io/)
-2. Open or install the script:
-   - Click [`Kone_Plus.user.js`](./Kone_Plus.user.js) and select **Raw** to trigger automatic installation by your userscript manager.
-   - Alternatively, copy the raw script code and create a new userscript in your extension dashboard.
-3. Navigate to **kone.gg** and click the **Key (🔑)** button in the top navigation bar to configure your default passwords.
+   - [Violentmonkey](https://violentmonkey.github.io/) (Recommended)
+   - [Tampermonkey](https://www.tampermonkey.net/)
+2. Open the userscript installation URL:
+   - Click to install [`Kone_Plus.user.js`](https://raw.githubusercontent.com/ProofPage/Kone-Plus/main/Kone_Plus.user.js).
+3. Confirm the installation prompt in your userscript manager.
+4. Navigate to **kone.gg** and click the **Key (🔑)** button in the top navigation bar to configure your default passwords.
 
 ---
 
