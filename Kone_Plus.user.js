@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kone Plus
 // @namespace    https://github.com/ProofPage/Kone-Plus
-// @version      3.0.0
+// @version      3.0.1
 // @description  Base64 decoder for kone.gg and password auto-fill for file hosts (kio, mega, pikpak, gofile, transfer, etc.)
 // @author       Page
 // @homepageURL  https://github.com/ProofPage/Kone-Plus
@@ -16,6 +16,8 @@
 // @match        *://transfer.it/*
 // @match        *://gofile.io/*
 // @match        *://workupload.com/*
+// @match        *://uploadnow.io/*
+// @match        *://www.uploadnow.io/*
 // @match        *://mypikpak.com/*
 // @match        *://jstrieb.github.io/*
 // @run-at       document-start
@@ -42,6 +44,12 @@
     const MIN_B64 = 8;
 
     const PW_SITES = {
+      'uploadnow.io': {
+        inputSel: 'input.input_floating[type="password"]',
+        btnSel: 'button[class*="buttons_lg__"]',
+        errorPat: [/incorrect|invalid password|wrong password/i],
+        mode: 'generic', triggerDelay: 1500, btnDelay: 500,
+      },
       'kio.ac': {
         inputSel: '.overflow-auto.max-w-full.grow.p-1 input:nth-of-type(1)',
         btnSel: '.flex.flex-col-reverse button:nth-of-type(1)',
@@ -111,7 +119,15 @@
       catch (e) { return null; }
     }
     function _kchKey(u) {
-      try { const x = new URL(/^https?:\/\//i.test(u) ? u : 'https://' + u); return x.origin + x.pathname; }
+      try {
+        const x = new URL(/^https?:\/\//i.test(u) ? u : 'https://' + u);
+        if (x.hostname.replace(/^www\./, '') === 'uploadnow.io') {
+          const id = x.pathname.match(/^\/f\/([^/]+)/)?.[1] ||
+            (/^\/(?:[a-z]{2}\/)?share\/?$/.test(x.pathname) ? x.searchParams.get('utm_source') : null);
+          if (id) return 'https://uploadnow.io/f/' + id;
+        }
+        return x.origin + x.pathname;
+      }
       catch (e) { return String(u).split(/[?#]/)[0]; }
     }
     function getChannelUrlMap() {
@@ -625,7 +641,7 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
       }
 
       let h = '';
-      try { h = new URL(url).hostname; } catch (e) { return; }
+      try { h = new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return; }
 
       cardEl.classList.add('lk-checking');
       const arr = cardEl.querySelector('.bl-arrow');
@@ -636,16 +652,20 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
           method: 'GET', url, timeout: 3500,
           onload(res) {
             const body = (res.responseText || '').toLowerCase();
-            const dead = res.status >= 400 || body.includes('컬렉션을 찾을 수 없음') || body.includes('만료되었습니다') || body.includes('존재하지 않는');
+            if (res.status !== 404 && res.status !== 410 && (res.status < 200 || res.status >= 300)) {
+              setLinkState(cardEl, null, `${h} · 확인 불가 (HTTP ${res.status})`);
+              return;
+            }
+            const dead = res.status === 404 || res.status === 410 || body.includes('컬렉션을 찾을 수 없음') || body.includes('만료되었습니다') || body.includes('존재하지 않는');
             const info = { alive: !dead, msg: dead ? `${h} · 링크 만료` : `${h} · 링크 정상` };
             _linkCheckCache.set(url, info);
             setLinkState(cardEl, info.alive, info.msg);
           },
-          onerror() { setLinkState(cardEl, false, `${h} · 연결 실패`); },
-          ontimeout() { setLinkState(cardEl, false, `${h} · 응답 없음`); },
+          onerror() { setLinkState(cardEl, null, `${h} · 연결 실패`); },
+          ontimeout() { setLinkState(cardEl, null, `${h} · 응답 없음`); },
         });
       } else if (h === 'mypikpak.com') {
-        const m = url.match(/mypikpak\.com\/s\/([^/?#]+)/);
+        const m = new URL(url).pathname.match(/^\/s\/([^/?#]+)/);
         if (!m) { setLinkState(cardEl, null, h); return; }
         GM_xmlhttpRequest({
           method: 'GET',
@@ -653,40 +673,68 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
           headers: { 'X-Client-Id': 'YNxT9w7GMdWvEOKa', 'Accept': 'application/json' },
           timeout: 3500,
           onload(res) {
-            if (res.status >= 400) {
+            if (res.status === 404 || res.status === 410) {
               setLinkState(cardEl, false, 'mypikpak · 링크 만료');
+              return;
+            }
+            if (res.status < 200 || res.status >= 300) {
+              setLinkState(cardEl, null, `mypikpak · 확인 불가 (HTTP ${res.status})`);
               return;
             }
             try {
               const d = JSON.parse(res.responseText);
-              if (d.share_status) {
-                const pass = /pass/i.test(d.share_status);
+              if (['OK', 'PASS_CODE_REQUIRED'].includes(d.share_status)) {
+                const pass = d.share_status === 'PASS_CODE_REQUIRED';
                 const info = { alive: true, msg: pass ? 'mypikpak · 정상 (비번 필요)' : 'mypikpak · 링크 정상' };
                 _linkCheckCache.set(url, info);
                 setLinkState(cardEl, info.alive, info.msg);
                 return;
               }
             } catch (e) {}
-            setLinkState(cardEl, false, 'mypikpak · 링크 만료');
+            setLinkState(cardEl, null, 'mypikpak · 확인 불가');
           },
           onerror() { setLinkState(cardEl, null, h); },
           ontimeout() { setLinkState(cardEl, null, h); },
+        });
+      } else if (h === 'uploadnow.io') {
+        const parsed = new URL(url);
+        const id = parsed.pathname.match(/^\/f\/([^/]+)/)?.[1] ||
+          (/^\/(?:[a-z]{2}\/)?share\/?$/.test(parsed.pathname) ? parsed.searchParams.get('utm_source') : null);
+        if (!id) { setLinkState(cardEl, null, h + ' · 상태 확인 미지원'); return; }
+        GM_xmlhttpRequest({
+          method: 'POST', url: 'https://uploadnow.io/api/file/search/folder-content',
+          headers: { 'Content-Type': 'application/json' },
+          data: JSON.stringify({ folderId: id, limit: 40, sortField: 'updateDate', sortDirection: 'desc' }),
+          timeout: 5000,
+          onload(res) {
+            let d;
+            try { d = JSON.parse(res.responseText); }
+            catch (e) { setLinkState(cardEl, null, h + ' · 확인 불가'); return; }
+            const locked = Array.isArray(d.codes) && d.codes.includes('PASSWORD_REQUIRED');
+            const dead = res.status === 404 && typeof d.error === 'string' && /folder .* does not exist/i.test(d.error);
+            const alive = locked ? true : dead ? false : null;
+            const msg = h + (locked ? ' · 정상 (비번 필요)' : dead ? ' · 링크 만료 또는 삭제' : ' · 확인 불가');
+            if (alive !== null) _linkCheckCache.set(url, { alive, msg });
+            setLinkState(cardEl, alive, msg);
+          },
+          onerror() { setLinkState(cardEl, null, h + ' · 연결 실패'); },
+          ontimeout() { setLinkState(cardEl, null, h + ' · 응답 없음'); },
         });
       } else if (h === 'gofile.io') {
         GM_xmlhttpRequest({
           method: 'GET', url, timeout: 4000,
           onload(res) {
             const body = (res.responseText || '').toLowerCase();
-            const dead = res.status >= 400 || body.includes('this content does not exist') || body.includes('not found');
-            const info = { alive: !dead, msg: dead ? 'gofile.io · 링크 만료' : 'gofile.io · 링크 정상' };
+            const dead = res.status === 404 || res.status === 410 || (res.status === 200 && body.includes('this content does not exist'));
+            const info = { alive: dead ? false : null, msg: dead ? 'gofile.io · 링크 만료' : 'gofile.io · 확인 불가 (동적 페이지)' };
             _linkCheckCache.set(url, info);
             setLinkState(cardEl, info.alive, info.msg);
           },
-          onerror() { setLinkState(cardEl, true, 'gofile.io · 링크 정상'); },
-          ontimeout() { setLinkState(cardEl, true, 'gofile.io · 링크 정상'); },
+          onerror() { setLinkState(cardEl, null, 'gofile.io · 연결 실패'); },
+          ontimeout() { setLinkState(cardEl, null, 'gofile.io · 응답 없음'); },
         });
       } else {
-        setLinkState(cardEl, true, h + ' · 링크 정상');
+        setLinkState(cardEl, null, h + ' · 상태 확인 미지원');
       }
     }
 
@@ -1005,7 +1053,7 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
     /* ================================================================
        다운로드 사이트 비밀번호 자동입력 실행부
     ================================================================ */
-    const siteCfg = PW_SITES[host];
+    const siteCfg = host === 'uploadnow.io' && !/^\/(?:f\/|(?:[a-z]{2}\/)?share(?:\/|$))/.test(location.pathname) ? null : PW_SITES[host];
     if (siteCfg) {
       function normText(t) { return String(t||'').replace(/\s+/g,' ').trim(); }
 
@@ -1074,7 +1122,7 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
           const attempt = () => {
             const input = getInputEl(siteCfg.inputSel); if (!input) return;
             const btn = kioGetBtn(getScope(input)); if (!btn) return;
-            if (normText(input.value) !== normText(expected)) return;
+            if (input.value !== expected) return;
             if (!btn.disabled) { btn.click(); KIO.lastSubmitAt = Date.now(); onSuccess(); return; }
             if (retries < KIO.RETRY_MAX) { retries++; setTimeout(attempt, KIO.RETRY_MS); }
             else { KIO.phase = 'submitted'; KIO.lastSubmitAt = Date.now(); }
@@ -1110,91 +1158,68 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
           const err = findPwError(input, siteCfg.errorPat);
           const key = KIO.active ? `${KIO.idx}:${err}` : '';
 
-          if (err && KIO.phase === 'submitted' && KIO.active && normText(input.value) === normText(KIO.active.value) && key !== KIO.lastAdvKey) {
+          if (err && KIO.phase === 'submitted' && KIO.active && input.value === KIO.active.value && key !== KIO.lastAdvKey) {
             KIO.lastAdvKey = key; KIO.idx++; await kioTryNext(input); return;
           }
           if (KIO.phase === 'idle') { await kioTryNext(input); return; }
           if (KIO.phase === 'attempting' && Date.now() - KIO.lastAttemptAt >= KIO.FALLBACK) { KIO.idx++; await kioTryNext(input); return; }
-          if (KIO.phase === 'submitted' && Date.now() - KIO.lastSubmitAt >= KIO.FALLBACK) { KIO.idx++; await kioTryNext(input); }
+          if (KIO.phase === 'submitted' && Date.now() - KIO.lastSubmitAt >= 15000) { KIO.phase = 'done'; }
         }
 
         setInterval(kioTick, 100);
       }
 
-      // GOFILE 모드 (최신 프론트엔드 unlockFolder 지원)
-      if (siteCfg.mode === 'gofile') {
-        async function gofileTryPw() {
+      // 공유 비밀번호 입력: 중복 실행 방지, 명시적인 오류가 있을 때만 다음 비밀번호 시도
+      if (siteCfg.mode === 'gofile' || siteCfg.mode === 'generic') {
+        let running = false;
+        const triedInputs = new WeakSet();
+        const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+        async function tryPasswords() {
+          const first = getInputEl(siteCfg.inputSel);
           const pws = getEffectivePwList();
-          for (const pw of pws) {
-            if (!pw) continue;
-            const input = getInputEl(siteCfg.inputSel);
-            if (!input) break;
-            setNativeValue(input, pw);
-            await new Promise(r => setTimeout(r, siteCfg.btnDelay || 200));
-
-            const btn = document.querySelector(siteCfg.btnSel);
-            const form = input.closest('form');
-            if (btn && !btn.disabled) {
-              btn.click();
-            } else if (form) {
-              if (form.requestSubmit) form.requestSubmit();
-              else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-            } else {
-              submitViaEnter(input);
+          if (running || !first || triedInputs.has(first) || !pws.length || first.value) return;
+          running = true;
+          try {
+            for (const pw of pws) {
+              const input = getInputEl(siteCfg.inputSel);
+              if (!input) break;
+              triedInputs.add(input);
+              const previousError = findPwError(input, siteCfg.errorPat);
+              setNativeValue(input, pw);
+              await pause(siteCfg.btnDelay || 300);
+              let cleared = !findPwError(input, siteCfg.errorPat);
+              const scope = getScope(input);
+              const btn = [...scope.querySelectorAll(siteCfg.btnSel)].find(b => isVisible(b) && !b.disabled) ||
+                [...scope.querySelectorAll('button')].find(b => isVisible(b) && !b.disabled && /^(확인|ok|confirm|submit|enter|unlock|access)$/i.test(normText(b.textContent)));
+              if (btn) btn.click();
+              else {
+                const form = input.closest('form');
+                if (form?.requestSubmit) form.requestSubmit();
+                else submitViaEnter(input);
+              }
+              const deadline = Date.now() + 15000;
+              let rejected = false;
+              while (Date.now() < deadline) {
+                await pause(200);
+                const current = getInputEl(siteCfg.inputSel);
+                if (!current) break;
+                triedInputs.add(current);
+                if (current.value && current.value !== pw) return; // 사용자 입력을 덮어쓰지 않음
+                const error = findPwError(current, siteCfg.errorPat);
+                if (!error) cleared = true;
+                if (error && (cleared || error !== previousError)) { rejected = true; break; }
+              }
+              if (!rejected) break; // 응답 지연을 비밀번호 오류로 추측하지 않음
             }
-
-            await new Promise(r => setTimeout(r, 1200));
-            const postInput = getInputEl(siteCfg.inputSel);
-            if (!postInput) break; // 잠금 해제 성공
-            if (findPwError(postInput, siteCfg.errorPat)) continue; // 틀린 경우 다음 비번 시도
+          } finally {
+            const current = getInputEl(siteCfg.inputSel);
+            if (current) triedInputs.add(current);
+            running = false;
           }
         }
-        const gObs = new MutationObserver(() => {
-          const input = getInputEl(siteCfg.inputSel);
-          if (input && !input.dataset._gTried) { input.dataset._gTried = '1'; setTimeout(gofileTryPw, 200); }
-        });
+        const gObs = new MutationObserver(tryPasswords);
         gObs.observe(document.documentElement, { childList: true, subtree: true });
-        setTimeout(() => {
-          const i = getInputEl(siteCfg.inputSel);
-          if (i && !i.dataset._gTried) { i.dataset._gTried = '1'; gofileTryPw(); }
-        }, siteCfg.triggerDelay || 800);
-      }
-
-      // GENERIC 모드 (MEGA, PikPak)
-      if (siteCfg.mode === 'generic') {
-        async function genericTryPw() {
-          const pws = getEffectivePwList();
-          for (const pw of pws) {
-            if (!pw) continue;
-            const input = getInputEl(siteCfg.inputSel);
-            if (!input) break;
-            setNativeValue(input, pw);
-            const btnWait = siteCfg.btnDelay || 200;
-            const deadline = Date.now() + btnWait;
-            let btn = null;
-            while (Date.now() < deadline) {
-              btn = document.querySelector(siteCfg.btnSel) || [...document.querySelectorAll('button')].find(b => isVisible(b) && /^(확인|ok|confirm|submit|enter|unlock|access)$/i.test(normText(b.textContent)));
-              if (btn && !btn.disabled) break;
-              await new Promise(r => setTimeout(r, 50));
-            }
-            if (btn && !btn.disabled) btn.click();
-            else submitViaEnter(input);
-
-            await new Promise(r => setTimeout(r, 1000));
-            const postInput = getInputEl(siteCfg.inputSel);
-            if (!postInput) break;
-            if (findPwError(postInput, siteCfg.errorPat)) continue;
-          }
-        }
-        const gObs = new MutationObserver(() => {
-          const input = getInputEl(siteCfg.inputSel);
-          if (input && !input.dataset._gTried) { input.dataset._gTried = '1'; setTimeout(genericTryPw, 300); }
-        });
-        gObs.observe(document.documentElement, { childList: true, subtree: true });
-        setTimeout(() => {
-          const i = getInputEl(siteCfg.inputSel);
-          if (i && !i.dataset._gTried) { i.dataset._gTried = '1'; genericTryPw(); }
-        }, siteCfg.triggerDelay || 1500);
+        setTimeout(tryPasswords, siteCfg.triggerDelay || 1500);
       }
 
       // WORKUPLOAD 모드
@@ -1239,12 +1264,12 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
           const input = getInputEl(siteCfg.inputSel);
           if (_tState === 'submitted') {
             if (!input) { _tGoneSeen = true; return; }
-            if (_tGoneSeen || findPwError(input, siteCfg.errorPat)) {
+            if (findPwError(input, siteCfg.errorPat)) {
               _tIdx++; _tGoneSeen = false;
               if (_tIdx >= getEffectivePwList().length) { _tDone = true; return; }
               _tState = 'idle'; return;
             }
-            if (Date.now() - _tSubmitAt > 120000) { _tIdx++; _tState = 'idle'; _tGoneSeen = false; return; }
+            if (Date.now() - _tSubmitAt > 120000) { _tDone = true; return; }
             return;
           }
           if (!input) return;
