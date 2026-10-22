@@ -48,6 +48,8 @@ A powerful and lightweight userscript designed for **[kone.gg](https://kone.gg/)
 
 Status support means that the script can inspect the page, not that every possible page state is recognized. Unrecognized states remain neutral instead of displaying a fabricated green or red badge. Google access requests are not proof that a file is deleted. Other hosts also use neutral results when no supported file or password prompt is detected.
 
+KIO embeds its collection response as Base64-encoded CBOR inside a SvelteKit fetched-data script. A verified `collection:protector_not_provided` response with password protection is displayed as `정상 (비번 필요)`, rather than an unsupported check. Truncated, unsupported, or malformed payloads stay neutral. Other hosts show why their automatic status cannot be established; this is not a claim that the share is expired.
+
 ---
 
 ## 🚀 Installation

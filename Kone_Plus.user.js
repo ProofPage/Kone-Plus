@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kone Plus
 // @namespace    https://github.com/ProofPage/Kone-Plus
-// @version      3.0.3
+// @version      3.0.4
 // @description  Base64 decoder for kone.gg and password auto-fill for file hosts (kio, mega, pikpak, gofile, transfer, etc.)
 // @author       Page
 // @homepageURL  https://github.com/ProofPage/Kone-Plus
@@ -694,6 +694,47 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         return { alive: false, msg: '링크 만료' };
       if (response.status < 200 || response.status >= 300)
         return { alive: null, msg: `확인 불가 (HTTP ${response.status})` };
+      if (['kio.ac', 'kiosk.ac'].includes(hostname)) {
+        try {
+          const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
+          const script = doc.querySelector('script[data-sveltekit-fetched][data-url="https://api.kio.ac/v0/collection/get"]');
+          if (script) {
+            const result = JSON.parse(script.textContent);
+            // KIO의 오류 응답은 CBOR text/map 형식. 다른 타입은 추측하지 않음.
+            const bytes = Uint8Array.from(atob(result.body), c => c.charCodeAt(0));
+            let offset = 0;
+            const read = (depth = 0) => {
+              if (depth > 8 || offset >= bytes.length) throw new Error('Invalid CBOR');
+              const header = bytes[offset++], type = header >> 5, extra = header & 31;
+              let size = extra;
+              if (extra === 24) {
+                if (offset >= bytes.length) throw new Error('Invalid CBOR length');
+                size = bytes[offset++];
+              } else if (extra >= 24) throw new Error('Unsupported CBOR length');
+              if (type === 3) {
+                if (offset + size > bytes.length) throw new Error('Invalid CBOR text');
+                const value = new TextDecoder('utf-8', { fatal: true }).decode(bytes.slice(offset, offset + size));
+                offset += size;
+                return value;
+              }
+              if (type === 5 && size <= 32) {
+                const value = Object.create(null);
+                for (let i = 0; i < size; i++) {
+                  const key = read(depth + 1);
+                  if (typeof key !== 'string') throw new Error('Invalid CBOR key');
+                  value[key] = read(depth + 1);
+                }
+                return value;
+              }
+              throw new Error('Unsupported CBOR type');
+            };
+            const body = read();
+            if (offset === bytes.length && result.status === 418 &&
+                body.code === 'collection:protector_not_provided' && body.meta?.type === 'password')
+              return { alive: true, msg: '정상 (비번 필요)' };
+          }
+        } catch (e) {}
+      }
       try {
         const data = JSON.parse(response.responseText);
         if (hostname === 'mega.nz') {
@@ -766,7 +807,15 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         };
       } else if (h === 'kio.ac' || h === 'kiosk.ac') request = { method: 'GET', url };
       if (!request) {
-        setLinkState(cardEl, null, h + ' · 만료 검증 불가');
+        const reasons = {
+          'gofile.io': '만료 검증 불가 (인증 필요)',
+          'workupload.com': '만료 검증 불가 (자동 조회 제한)',
+          'transfer.it': '만료 검증 불가 (동적 페이지)',
+          'uploadnow.io': '만료 검증 불가 (동적 페이지)',
+          'docs.google.com': '만료 검증 불가 (접근 권한 확인 필요)',
+          'drive.google.com': '만료 검증 불가 (접근 권한 확인 필요)',
+        };
+        setLinkState(cardEl, null, h + ' · ' + (reasons[h] || '만료 검증 불가'));
         return;
       }
       if (_linkRequests.has(url)) {

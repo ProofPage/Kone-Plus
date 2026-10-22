@@ -9,6 +9,12 @@ const card = { setAttribute() {}, style: {}, querySelector() { return null; } };
 let state;
 const context = {
   URL, Date, DONE_ATTR: 'data-b64d', _linkCheckCache: new Map(), _linkRequests: new Map(),
+  atob, Uint8Array, TextDecoder,
+  DOMParser: class {
+    parseFromString(text) {
+      return { querySelector: () => text.startsWith('KIO-FETCHED:') ? { textContent: text.slice(12) } : null };
+    }
+  },
   crypto: { randomUUID: () => 'test-device' },
   GM_xmlhttpRequest: request => { context.request = request; },
   document: { createElement: () => card },
@@ -48,6 +54,20 @@ for (const [host, status, body, alive, msg] of [
   const result = context.classifyLinkResponse(host, { status, responseText: body });
   assert.equal(result.alive, alive);
   assert.equal(result.msg, msg);
+}
+// Actual KIO /collection/get payload observed on both user-supplied live shares.
+const protectedBody = 'o2Rjb2RleCFjb2xsZWN0aW9uOnByb3RlY3Rvcl9ub3RfcHJvdmlkZWRnbWVzc2FnZXZwcm90ZWN0b3Igbm9' +
+  '0IHByb3ZpZGVkZG1ldGGhZHR5cGVocGFzc3dvcmQ=';
+for (const host of ['kio.ac', 'kiosk.ac']) {
+  const classify = (body, status = 418) => context.classifyLinkResponse(host, {
+    status: 200, responseText: 'KIO-FETCHED:' + JSON.stringify({ status, body }),
+  });
+  const result = classify(protectedBody);
+  assert.equal(result.alive, true);
+  assert.equal(result.msg, '정상 (비번 필요)');
+  assert.equal(classify(protectedBody, 500).alive, null);
+  assert.equal(classify('invalid-base64').alive, null);
+  assert.equal(classify(protectedBody.slice(0, 40)).alive, null);
 }
 context.checkLink('https://mega.nz/file/error', card);
 context.request.onerror();
