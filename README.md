@@ -10,10 +10,11 @@ A powerful and lightweight userscript designed for **[kone.gg](https://kone.gg/)
   - Detects single or recursively encoded Base64 strings within posts and comments.
   - Seamlessly transforms decoded text into rich, interactive link cards without breaking layout formatting.
 
-- **🔗 Real-Time Link Health Checks**
-  - Opens supported links in temporary background tabs, one at a time, to inspect the rendered page using the browser's existing session.
+- **🔗 Passive Link Status**
+  - Base64 decoding only displays link cards; it never opens destination pages automatically.
+  - Status is display-only: no check control and no automatic destination tabs. Only clicking the link itself opens it. Supported hosts use HTTP/API requests; unavailable checks display `만료 검증 불가`.
   - Does not classify an HTTP error, JavaScript shell, timeout, or permission prompt as an expired file.
-  - Status checks never enter passwords or trigger downloads. Tabs are closed after a result or timeout.
+  - Status checks never enter passwords, execute destination page scripts, or trigger downloads.
   - Color-coded status badges:
     - 🟢 Green: Active / Alive
     - 🔴 Red: Expired / Dead
@@ -36,14 +37,14 @@ A powerful and lightweight userscript designed for **[kone.gg](https://kone.gg/)
 | Platform | Domain | Supported Features |
 | :--- | :--- | :--- |
 | **KIO** | `kio.ac`, `kiosk.ac` | Status check, automated password attempt |
-| **Gofile** | `gofile.io` | Status check, automated folder unlock |
-| **Mega** | `mega.nz` | Rendered share status check, decryption password auto-entry |
+| **Gofile** | `gofile.io` | Neutral status, automated folder unlock |
+| **Mega** | `mega.nz` | Public file/folder API status, decryption password auto-entry |
 | **PikPak** | `mypikpak.com` | Share code status check, password auto-entry |
-| **Workupload** | `workupload.com` | Rendered share status check, automated password form submission |
+| **Workupload** | `workupload.com` | Neutral status, automated password form submission |
 | **Transfer.it** | `transfer.it` | Dialog password auto-entry; manual download |
 | **Link Lock** | `jstrieb.github.io` | Encrypted-link status check, client-side password decrypt retry |
-| **UploadNow** | `uploadnow.io` | Password autofill, rendered expired/password-protected/shared-folder detection |
-| **Google Docs / Drive** | `docs.google.com`, `drive.google.com` | Rendered missing-file and access-required detection; no password submission |
+| **UploadNow** | `uploadnow.io` | Password autofill; neutral status without authenticated page inspection |
+| **Google Docs / Drive** | `docs.google.com`, `drive.google.com` | Neutral status; no page opening or password submission |
 
 Status support means that the script can inspect the page, not that every possible page state is recognized. Unrecognized states remain neutral instead of displaying a fabricated green or red badge. Google access requests are not proof that a file is deleted. Other hosts also use neutral results when no supported file or password prompt is detected.
 
@@ -58,11 +59,11 @@ Status support means that the script can inspect the page, not that every possib
    - Click to install [`Kone_Plus.user.js`](https://raw.githubusercontent.com/ProofPage/Kone-Plus/main/Kone_Plus.user.js).
 3. Confirm the installation prompt in your userscript manager.
 4. Navigate to **kone.gg** and click the **Key (🔑)** button in the top navigation bar to configure your default passwords.
-5. When updating to 3.0.2, accept the new `GM_openInTab` and `GM_deleteValue` permissions. Without the updated script and grants, background status checks cannot operate.
+5. Version 3.0.3 removes the tab-opening permission and requests `GM_xmlhttpRequest` only for the listed status-check domains.
 
 The script requests Violentmonkey's `@inject-into content` context and Tampermonkey's `@sandbox DOM` context. It only needs DOM and userscript-manager APIs, not page JavaScript globals. This avoids relying on `eval` or fetching local test code on sites with restrictive CSP/Trusted Types rules. Tampermonkey's actual context also depends on which sandbox contexts are enabled in its settings. No site CSP is disabled, and the script no longer requests unrestricted cross-origin HTTP access.
 
-Background tabs load third-party pages and may run their normal scripts or advertisements. Checks are sequential and may take up to 25 seconds each. Browser or extension restrictions, a login redirect, and unsupported page layouts can prevent a definitive result. Passwords are stored by the userscript manager, not uploaded to a separate service.
+Status requests time out after five seconds. Invalid JSON, unknown API responses, authentication failures, and service errors stay neutral. Protected MEGA links do not reveal their target status until unlocked, so they are not classified as alive from a successful homepage response. Passwords are stored by the userscript manager, not uploaded to a separate service.
 
 ## Validation
 
@@ -72,8 +73,7 @@ Run the dependency-free checks with Node.js:
 node --check Kone_Plus.user.js
 node tests/link-status.cjs
 node tests/password-attempts.cjs
-node tests/background-probes.cjs
-node tests/probe-routing.cjs
+node tests/passive-status.cjs
 node tests/linklock-retry.cjs
 node tests/manual-download.cjs
 ```
@@ -84,7 +84,7 @@ Decoded board links also provided a publicly readable Google document and an exp
 
 Google Docs and Transfer.it were additionally checked with direct browser DOM inspection, without `eval`, localhost requests, or CSP modifications. The public document exposes a visible `.kix-appview-editor`; its “request edit access” control is not treated as a missing-file or read-access error. Transfer.it displays its explicit missing/expired-transfer message. Full extension-installed cross-tab validation remains separate from these DOM and source-level checks.
 
-Subsequent checks installed the local 3.0.2 script in Chrome with Tampermonkey 5.5.1. Kone displayed UploadNow as password-protected; opening it automatically submitted the saved `replay` password and displayed four files. Kone also displayed the Google document as open. Transfer.it initially timed out because its probe marker was lost; after reinstalling the corrected source, its Kone card correctly displayed “expired or deleted.” These checks used the real extension and shared storage, not test GM adapters.
+Historical 3.0.2 checks used Chrome with Tampermonkey 5.5.1. UploadNow automatically submitted the saved `replay` password and displayed four files. Google Docs and Transfer.it background-tab checks also ran, but that status-check implementation was removed in 3.0.3. Those historical checks do not validate the new HTTP/API path.
 
 Additional Chrome/Tampermonkey checks verified the remaining three adapters:
 
@@ -98,7 +98,7 @@ The three cards above were exercised using test links inserted locally into the 
 
 The live MEGA protected-folder example and its password `123.admin.30S` are published in [section 4.4.1 of this research article](https://www.techscience.com/cmc/v73n1/47796/html). Its underlying folder handle is `yVAA1DQQ`. Older protected examples found during testing decrypted correctly but pointed to deleted or disabled content; they were not counted as live-share successes.
 
-Probe identities are captured at document start. Hidden tabs can also recover an unexpired task identity from userscript storage when a host removes URL parameters; ordinary foreground visits do not consume this fallback. Task records are removed on completion or timeout.
+The background-tab queue, probe routing, and tab-opening permission have been removed. Status wording follows the referenced KONE + script: `링크 정상`, `링크 만료`, `정상 (비번 필요)`, `만료 검증 불가`, `연결 실패`, and `응답 없음`. Unlike the reference, failed or unrecognized responses are not treated as confirmed alive or expired.
 
 `node tests/serve-live.cjs` serves only the working script at `http://127.0.0.1:18764/script.js` for local browser testing. Stop the process after testing.
 

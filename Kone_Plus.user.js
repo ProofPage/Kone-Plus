@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kone Plus
 // @namespace    https://github.com/ProofPage/Kone-Plus
-// @version      3.0.2
+// @version      3.0.3
 // @description  Base64 decoder for kone.gg and password auto-fill for file hosts (kio, mega, pikpak, gofile, transfer, etc.)
 // @author       Page
 // @homepageURL  https://github.com/ProofPage/Kone-Plus
@@ -28,8 +28,11 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_deleteValue
-// @grant        GM_openInTab
+// @grant        GM_xmlhttpRequest
+// @connect      kio.ac
+// @connect      kiosk.ac
+// @connect      g.api.mega.co.nz
+// @connect      api-drive.mypikpak.com
 // @license      MIT
 // ==/UserScript==
 
@@ -37,7 +40,6 @@
   'use strict';
 
   const host = location.hostname.replace(/^www\./, '');
-  const initialProbeKey = new URL(location.href).searchParams.get('kone_plus_probe');
 
   function domReady(fn) {
     if (document.readyState !== 'loading') fn();
@@ -160,70 +162,6 @@
         return { alive: true, msg: '다운로드 링크 확인됨' };
       }
       return null;
-    }
-
-    // 조회용 탭은 페이지 표시만 관찰하며 자동 입력/다운로드를 실행하지 않음.
-    const pendingProbe = document.visibilityState === 'hidden' ?
-      GM_getValue('kone-probe-task:' + _kchKey(location.href), null) : null;
-    const probeKey = initialProbeKey ||
-      (pendingProbe && pendingProbe.expiresAt > Date.now() ? pendingProbe.id : null);
-    if (probeKey && /^kone-probe-[a-z0-9-]+$/i.test(probeKey)) {
-      const clean = new URL(location.href);
-      clean.searchParams.delete('kone_plus_probe');
-      history.replaceState(history.state, '', clean.href);
-      const deadline = Date.now() + 20000;
-      const timer = setInterval(() => {
-        const result = inspectSharePage();
-        if (result || Date.now() >= deadline) {
-          clearInterval(timer);
-          GM_setValue(probeKey, JSON.stringify(result || { alive: null, msg: '페이지 확인됨 · 파일 상태 판별 불가' }));
-        }
-      }, 500);
-      return;
-    }
-
-    let probeQueue = Promise.resolve();
-    const pendingProbes = new Map();
-    function checkRenderedLink(url, cardEl) {
-      const h = new URL(url).hostname.replace(/^www\./, '');
-      const key = url;
-      if (!pendingProbes.has(key)) {
-        const job = probeQueue.then(() => new Promise(resolve => {
-          const target = new URL(url);
-          if (h === 'uploadnow.io' && target.pathname.startsWith('/f/')) {
-            const id = target.pathname.split('/')[2];
-            target.pathname = '/en/share';
-            target.searchParams.set('utm_source', id);
-          }
-          const id = 'kone-probe-' + crypto.randomUUID();
-          target.searchParams.set('kone_plus_probe', id);
-          const taskKey = 'kone-probe-task:' + _kchKey(target.href);
-          GM_setValue(taskKey, { id, expiresAt: Date.now() + 30000 });
-          let tab;
-          try { tab = GM_openInTab(target.href, { active: false, insert: false, setParent: true }); }
-          catch (e) { GM_deleteValue(taskKey); resolve({ alive: null, msg: '백그라운드 조회를 열 수 없음' }); return; }
-          const deadline = Date.now() + 25000;
-          const timer = setInterval(() => {
-            const raw = GM_getValue(id, null);
-            if (raw || tab.closed || Date.now() >= deadline) {
-              clearInterval(timer);
-              tab.close();
-              GM_deleteValue(id);
-              GM_deleteValue(taskKey);
-              resolve(raw ? JSON.parse(raw) : { alive: null, msg: '조회 중단 또는 응답 없음' });
-            }
-          }, 500);
-        }));
-        pendingProbes.set(key, job);
-        probeQueue = job.catch(() => {});
-        job.finally(() => pendingProbes.delete(key));
-      }
-      setLinkState(cardEl, null, h + ' · 백그라운드 페이지 확인 중');
-      pendingProbes.get(key).then(info => {
-        const msg = h + ' · ' + info.msg;
-        if (info.alive !== null) _linkCheckCache.set(key, { alive: info.alive, msg, expiresAt: Date.now() + 60000 });
-        setLinkState(cardEl, info.alive, msg);
-      });
     }
 
     /* ================================================================
@@ -749,6 +687,36 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
        링크 생존 확인 및 카드 생성
     ================================================================ */
     const _linkCheckCache = new Map();
+    const _linkRequests = new Map();
+
+    function classifyLinkResponse(hostname, response) {
+      if ([404, 410].includes(response.status) && hostname !== 'mega.nz')
+        return { alive: false, msg: '링크 만료' };
+      if (response.status < 200 || response.status >= 300)
+        return { alive: null, msg: `확인 불가 (HTTP ${response.status})` };
+      try {
+        const data = JSON.parse(response.responseText);
+        if (hostname === 'mega.nz') {
+          const item = Array.isArray(data) ? data[0] : data;
+          if (item === -9) return { alive: false, msg: '링크 만료' };
+          if (item && typeof item === 'object' &&
+              (Array.isArray(item.f) || (typeof item.g === 'string' && typeof item.at === 'string')))
+            return { alive: true, msg: '링크 정상' };
+        }
+        if (hostname === 'mypikpak.com') {
+          if (['OK', 'ACTIVE', 'NORMAL'].includes(data?.share_status))
+            return { alive: true, msg: '링크 정상' };
+          if (data?.share_status === 'PASS_CODE_REQUIRED')
+            return { alive: true, msg: '정상 (비번 필요)' };
+          if (['EXPIRED', 'CANCELLED', 'DELETED'].includes(data?.share_status))
+            return { alive: false, msg: '링크 만료' };
+        }
+      } catch (e) {}
+      if (['kio.ac', 'kiosk.ac'].includes(hostname) &&
+          /컬렉션을 찾을 수 없음|존재하지 않는 컬렉션|collection not found/i.test(response.responseText || ''))
+        return { alive: false, msg: '링크 만료' };
+      return { alive: null, msg: '만료 검증 불가' };
+    }
 
     function setLinkState(el, alive, msg) {
       el.classList.remove('lk-checking', 'lk-alive', 'lk-dead');
@@ -770,15 +738,61 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
       let h = '';
       try { h = new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return; }
 
-      cardEl.classList.add('lk-checking');
-      const arr = cardEl.querySelector('.bl-arrow');
-      if (arr) arr.innerHTML = '⟳';
-
-      if (PW_SITES[h] || h === 'docs.google.com' || h === 'drive.google.com') {
-        checkRenderedLink(url, cardEl);
-      } else {
-        setLinkState(cardEl, null, h + ' · 상태 확인 미지원');
+      if (h === 'jstrieb.github.io' && new URL(url).hash) {
+        setLinkState(cardEl, null, h + ' · 정상 여부 확인 불가 (암호화 링크)');
+        return;
       }
+      let request;
+      if (h === 'mega.nz') {
+        const parsed = new URL(url);
+        const match = parsed.pathname.match(/^\/(file|folder)\/([A-Za-z0-9_-]+)$/) ||
+          parsed.hash.match(/^#(!|F!)([A-Za-z0-9_-]+)!/);
+        if (match) {
+          const folder = match[1] === 'folder' || match[1] === 'F!';
+          request = {
+            method: 'POST',
+            url: 'https://g.api.mega.co.nz/cs?id=0&app=webclient' + (folder ? '&n=' + match[2] : ''),
+            headers: { 'Content-Type': 'application/json' },
+            data: JSON.stringify([folder ? { a: 'f', c: 1 } : { a: 'g', p: match[2], ssl: 0 }]),
+          };
+        }
+      } else if (h === 'mypikpak.com') {
+        const id = new URL(url).pathname.match(/^\/s\/([^/]+)\/?$/)?.[1];
+        if (id) request = {
+          method: 'GET',
+          url: 'https://api-drive.mypikpak.com/drive/v1/share?share_id=' + encodeURIComponent(id) +
+            '&thumbnail_size=SIZE_MEDIUM&pass_code=&device_id=' + crypto.randomUUID(),
+          headers: { 'X-Client-Id': 'YNxT9w7GMdWvEOKa', Accept: 'application/json' },
+        };
+      } else if (h === 'kio.ac' || h === 'kiosk.ac') request = { method: 'GET', url };
+      if (!request) {
+        setLinkState(cardEl, null, h + ' · 만료 검증 불가');
+        return;
+      }
+      if (_linkRequests.has(url)) {
+        _linkRequests.get(url).add(cardEl);
+        setLinkState(cardEl, null, h + ' · 확인 중');
+        return;
+      }
+      _linkRequests.set(url, new Set([cardEl]));
+      setLinkState(cardEl, null, h + ' · 확인 중');
+      const finish = info => {
+        const cards = _linkRequests.get(url);
+        if (!cards) return;
+        _linkRequests.delete(url);
+        const result = { ...info, msg: h + ' · ' + info.msg, expiresAt: Date.now() + 60000 };
+        if (info.alive !== null) _linkCheckCache.set(url, result);
+        for (const card of cards) setLinkState(card, result.alive, result.msg);
+      };
+      try {
+        GM_xmlhttpRequest({
+          ...request, timeout: 5000,
+          onload: response => finish(classifyLinkResponse(h, response)),
+          onerror: () => finish({ alive: null, msg: '연결 실패' }),
+          ontimeout: () => finish({ alive: null, msg: '응답 없음' }),
+          onabort: () => finish({ alive: null, msg: '조회 중단' }),
+        });
+      } catch (e) { finish({ alive: null, msg: '확인 불가' }); }
     }
 
     function makeLinkCard(rawUrl) {
@@ -807,12 +821,12 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         <span class="bl-icon-wrap"><svg class="bl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
         <span class="bl-text">
           <span class="bl-title">${esc(trimmed)}</span>
-          <span class="bl-sub">${esc(h)}</span>
+          <span class="bl-sub">${esc(h)} · 미확인</span>
         </span>
         <span class="bl-arrow">↗</span>
       `;
 
-      setTimeout(() => checkLink(url, a), 100);
+      checkLink(url, a);
       return a;
     }
 
