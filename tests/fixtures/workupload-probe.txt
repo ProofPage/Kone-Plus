@@ -1,0 +1,2 @@
+Kone Plus password autofill integration test.
+This file contains no personal information and no executable code.
