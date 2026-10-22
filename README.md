@@ -2,6 +2,8 @@
 
 A powerful and lightweight userscript designed for **[kone.gg](https://kone.gg/)** and supported file hosting platforms. It automatically decodes Base64-encoded links in posts and comments, provides interactive link health status cards, and automates password entry across various file sharing services.
 
+Version **3.0.5** keeps navigation and downloads under your control: decoding and status checks never open destination tabs or click download buttons.
+
 ---
 
 ## ✨ Features
@@ -12,7 +14,7 @@ A powerful and lightweight userscript designed for **[kone.gg](https://kone.gg/)
 
 - **🔗 Passive Link Status**
   - Base64 decoding only displays link cards; it never opens destination pages automatically.
-  - Status is display-only: no check control and no automatic destination tabs. Only clicking the link itself opens it. Supported hosts use HTTP/API requests; unavailable checks display `만료 검증 불가`.
+  - Status is display-only: no check control and no automatic destination tabs. Only clicking the link itself opens it. Supported hosts use HTTP/API requests. Hosts without an implemented checker display `상태 조회 미지원`; unrecognized responses display `만료 검증 불가`.
   - Does not classify an HTTP error, JavaScript shell, timeout, or permission prompt as an expired file.
   - Status checks never enter passwords, execute destination page scripts, or trigger downloads.
   - Color-coded status badges:
@@ -20,6 +22,7 @@ A powerful and lightweight userscript designed for **[kone.gg](https://kone.gg/)
     - 🔴 Red: Expired / Dead
     - ⚪ Default: Checking, access required, or file status not established
   - Recognized results are cached for 60 seconds within the current page.
+  - Pending requests show a spinning `⟳` and `aria-busy`; completed and unknown states clear the busy indicator and previous success/error colors. Encrypted links remain neutral until their destination can be verified.
   - Includes a one-click clipboard copy button for rapid URL sharing.
 
 - **🔐 Smart Password Autofill & Manager**
@@ -48,7 +51,17 @@ A powerful and lightweight userscript designed for **[kone.gg](https://kone.gg/)
 
 Status support means that the script can inspect the page, not that every possible page state is recognized. Unrecognized states remain neutral instead of displaying a fabricated green or red badge. Google access requests are not proof that a file is deleted. Other hosts also use neutral results when no supported file or password prompt is detected.
 
-KIO embeds its collection response as Base64-encoded CBOR inside a SvelteKit fetched-data script. A verified `collection:protector_not_provided` response with password protection is displayed as `정상 (비번 필요)`, rather than an unsupported check. Truncated, unsupported, or malformed payloads stay neutral. Other hosts show why their automatic status cannot be established; this is not a claim that the share is expired.
+| Display | Meaning |
+| :--- | :--- |
+| `확인 중` | HTTP/API request in progress; spinning icon |
+| `링크 정상` / `정상 (비번 필요)` | Positive service response; green |
+| `링크 만료` | Explicit missing/expired result; red |
+| `상태 조회 미지원` | No implemented checker; neutral, not an access error |
+| `만료 검증 불가` | Response received but not recognized; neutral |
+| `연결 실패` / `응답 없음` | Request failed or timed out; neutral |
+| `비번 보호 링크 (만료 미확인)` / `암호화 링크 (만료 미확인)` | Encrypted destination cannot yet be checked; neutral |
+
+KIO embeds its collection response as Base64-encoded CBOR inside a SvelteKit fetched-data script. A verified `collection:protector_not_provided` response with password protection is displayed as `정상 (비번 필요)`, rather than an unsupported check. Truncated, unsupported, or malformed payloads stay neutral. Expiry text inside scripts, styles, or templates is not treated as a visible missing-collection message. Unsupported hosts are not labeled as requiring authentication or permissions without an actual response establishing that condition.
 
 ---
 
@@ -104,7 +117,7 @@ The background-tab queue, probe routing, and tab-opening permission have been re
 
 `node tests/serve-live.cjs` serves only the working script at `http://127.0.0.1:18764/script.js` for local browser testing. Stop the process after testing.
 
-`tests/background-probes.cjs` exercises the actual queue function with simulated userscript-manager APIs. It checks duplicate suppression, sequential tabs, redirect normalization, result delivery, cache expiry timestamps, storage/timer cleanup, timeouts, manually closed tabs, and unavailable tab APIs. It does not replace testing with an installed userscript manager.
+`tests/passive-status.cjs` checks HTTP/API classification, KIO CBOR payloads, exact status messages, loading/color/icon transitions, cache behavior, request cleanup, and the absence of automatic tab opening. These source-level tests do not replace extension-installed browser checks.
 
 ---
 

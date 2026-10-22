@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kone Plus
 // @namespace    https://github.com/ProofPage/Kone-Plus
-// @version      3.0.4
+// @version      3.0.5
 // @description  Base64 decoder for kone.gg and password auto-fill for file hosts (kio, mega, pikpak, gofile, transfer, etc.)
 // @author       Page
 // @homepageURL  https://github.com/ProofPage/Kone-Plus
@@ -690,6 +690,7 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
     const _linkRequests = new Map();
 
     function classifyLinkResponse(hostname, response) {
+      let kioVisibleText = '';
       if ([404, 410].includes(response.status) && hostname !== 'mega.nz')
         return { alive: false, msg: '링크 만료' };
       if (response.status < 200 || response.status >= 300)
@@ -698,6 +699,8 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         try {
           const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
           const script = doc.querySelector('script[data-sveltekit-fetched][data-url="https://api.kio.ac/v0/collection/get"]');
+          doc.querySelectorAll('script,style,template').forEach(el => el.remove());
+          kioVisibleText = doc.body?.textContent || '';
           if (script) {
             const result = JSON.parse(script.textContent);
             // KIO의 오류 응답은 CBOR text/map 형식. 다른 타입은 추측하지 않음.
@@ -754,19 +757,21 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         }
       } catch (e) {}
       if (['kio.ac', 'kiosk.ac'].includes(hostname) &&
-          /컬렉션을 찾을 수 없음|존재하지 않는 컬렉션|collection not found/i.test(response.responseText || ''))
+          /컬렉션을 찾을 수 없음|존재하지 않는 컬렉션|collection not found/i.test(kioVisibleText))
         return { alive: false, msg: '링크 만료' };
       return { alive: null, msg: '만료 검증 불가' };
     }
 
-    function setLinkState(el, alive, msg) {
+    function setLinkState(el, alive, msg, checking = false) {
       el.classList.remove('lk-checking', 'lk-alive', 'lk-dead');
-      if (alive === true) el.classList.add('lk-alive');
+      el.setAttribute('aria-busy', String(checking));
+      if (checking) el.classList.add('lk-checking');
+      else if (alive === true) el.classList.add('lk-alive');
       else if (alive === false) el.classList.add('lk-dead');
       const sub = el.querySelector('.bl-sub');
       const arr = el.querySelector('.bl-arrow');
       if (sub) sub.textContent = msg;
-      if (arr) arr.innerHTML = alive === true ? '✓' : alive === false ? '!' : '↗';
+      if (arr) arr.textContent = checking ? '⟳' : alive === true ? '✓' : alive === false ? '!' : '↗';
     }
 
     function checkLink(url, cardEl) {
@@ -779,13 +784,17 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
       let h = '';
       try { h = new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return; }
 
-      if (h === 'jstrieb.github.io' && new URL(url).hash) {
-        setLinkState(cardEl, null, h + ' · 정상 여부 확인 불가 (암호화 링크)');
+      if (h === 'jstrieb.github.io' && new URL(url).pathname.startsWith('/link-lock/') && new URL(url).hash) {
+        setLinkState(cardEl, null, h + ' · 암호화 링크 (만료 미확인)');
         return;
       }
       let request;
       if (h === 'mega.nz') {
         const parsed = new URL(url);
+        if (parsed.hash.startsWith('#P!')) {
+          setLinkState(cardEl, null, h + ' · 비번 보호 링크 (만료 미확인)');
+          return;
+        }
         const match = parsed.pathname.match(/^\/(file|folder)\/([A-Za-z0-9_-]+)$/) ||
           parsed.hash.match(/^#(!|F!)([A-Za-z0-9_-]+)!/);
         if (match) {
@@ -807,24 +816,16 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         };
       } else if (h === 'kio.ac' || h === 'kiosk.ac') request = { method: 'GET', url };
       if (!request) {
-        const reasons = {
-          'gofile.io': '만료 검증 불가 (인증 필요)',
-          'workupload.com': '만료 검증 불가 (자동 조회 제한)',
-          'transfer.it': '만료 검증 불가 (동적 페이지)',
-          'uploadnow.io': '만료 검증 불가 (동적 페이지)',
-          'docs.google.com': '만료 검증 불가 (접근 권한 확인 필요)',
-          'drive.google.com': '만료 검증 불가 (접근 권한 확인 필요)',
-        };
-        setLinkState(cardEl, null, h + ' · ' + (reasons[h] || '만료 검증 불가'));
+        setLinkState(cardEl, null, h + ' · 상태 조회 미지원');
         return;
       }
       if (_linkRequests.has(url)) {
         _linkRequests.get(url).add(cardEl);
-        setLinkState(cardEl, null, h + ' · 확인 중');
+        setLinkState(cardEl, null, h + ' · 확인 중', true);
         return;
       }
       _linkRequests.set(url, new Set([cardEl]));
-      setLinkState(cardEl, null, h + ' · 확인 중');
+      setLinkState(cardEl, null, h + ' · 확인 중', true);
       const finish = info => {
         const cards = _linkRequests.get(url);
         if (!cards) return;
