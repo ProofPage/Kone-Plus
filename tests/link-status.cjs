@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../Kone_Plus.user.js'), 'utf8');
 const inspectStart = source.indexOf('    function inspectSharePage(');
-const inspect = source.slice(inspectStart, source.indexOf('    /* ===', inspectStart));
+const inspect = source.slice(inspectStart, source.indexOf('    // 조회용 탭', inspectStart));
 const key = source.slice(source.indexOf('    function _kchKey('), source.indexOf('    function getChannelUrlMap('));
 const cases = [
   ['kio.ac', '컬렉션을 찾을 수 없음', false],
