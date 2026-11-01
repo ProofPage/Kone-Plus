@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kone Plus
 // @namespace    https://github.com/ProofPage/Kone-Plus
-// @version      3.1.0
+// @version      3.2.0
 // @description  Base64 decoder for kone.gg and password auto-fill for file hosts (kio, mega, pikpak, gofile, transfer, etc.)
 // @author       Page
 // @homepageURL  https://github.com/ProofPage/Kone-Plus
@@ -28,8 +28,8 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_deleteValue
-// @grant        GM_openInTab
+// @grant        GM_xmlhttpRequest
+// @connect      *
 // @license      MIT
 // ==/UserScript==
 
@@ -37,7 +37,6 @@
   'use strict';
 
   const host = location.hostname.replace(/^www\./, '');
-  const initialProbeKey = new URL(location.href).searchParams.get('kone_plus_probe');
 
   function domReady(fn) {
     if (document.readyState !== 'loading') fn();
@@ -160,70 +159,6 @@
         return { alive: true, msg: '다운로드 링크 확인됨' };
       }
       return null;
-    }
-
-    // 조회용 탭은 페이지 표시만 관찰하며 자동 입력/다운로드를 실행하지 않음.
-    const pendingProbe = document.visibilityState === 'hidden' ?
-      GM_getValue('kone-probe-task:' + _kchKey(location.href), null) : null;
-    const probeKey = initialProbeKey ||
-      (pendingProbe && pendingProbe.expiresAt > Date.now() ? pendingProbe.id : null);
-    if (probeKey && /^kone-probe-[a-z0-9-]+$/i.test(probeKey)) {
-      const clean = new URL(location.href);
-      clean.searchParams.delete('kone_plus_probe');
-      history.replaceState(history.state, '', clean.href);
-      const deadline = Date.now() + 20000;
-      const timer = setInterval(() => {
-        const result = inspectSharePage();
-        if (result || Date.now() >= deadline) {
-          clearInterval(timer);
-          GM_setValue(probeKey, JSON.stringify(result || { alive: null, msg: '페이지 확인됨 · 파일 상태 판별 불가' }));
-        }
-      }, 500);
-      return;
-    }
-
-    let probeQueue = Promise.resolve();
-    const pendingProbes = new Map();
-    function checkRenderedLink(url, cardEl) {
-      const h = new URL(url).hostname.replace(/^www\./, '');
-      const key = url;
-      if (!pendingProbes.has(key)) {
-        const job = probeQueue.then(() => new Promise(resolve => {
-          const target = new URL(url);
-          if (h === 'uploadnow.io' && target.pathname.startsWith('/f/')) {
-            const id = target.pathname.split('/')[2];
-            target.pathname = '/en/share';
-            target.searchParams.set('utm_source', id);
-          }
-          const id = 'kone-probe-' + crypto.randomUUID();
-          target.searchParams.set('kone_plus_probe', id);
-          const taskKey = 'kone-probe-task:' + _kchKey(target.href);
-          GM_setValue(taskKey, { id, expiresAt: Date.now() + 30000 });
-          let tab;
-          try { tab = GM_openInTab(target.href, { active: false, insert: false, setParent: true }); }
-          catch (e) { GM_deleteValue(taskKey); resolve({ alive: null, msg: '백그라운드 조회를 열 수 없음' }); return; }
-          const deadline = Date.now() + 25000;
-          const timer = setInterval(() => {
-            const raw = GM_getValue(id, null);
-            if (raw || tab.closed || Date.now() >= deadline) {
-              clearInterval(timer);
-              try { tab.close(); } catch (err) {}
-              GM_deleteValue(id);
-              GM_deleteValue(taskKey);
-              resolve(raw ? JSON.parse(raw) : { alive: null, msg: '조회 중단 또는 응답 없음' });
-            }
-          }, 500);
-        }));
-        pendingProbes.set(key, job);
-        probeQueue = job.catch(() => {});
-        job.finally(() => pendingProbes.delete(key));
-      }
-      setLinkState(cardEl, null, h + ' · 백그라운드 페이지 확인 중');
-      pendingProbes.get(key).then(info => {
-        const msg = h + ' · ' + info.msg;
-        if (info.alive !== null) _linkCheckCache.set(key, { alive: info.alive, msg, expiresAt: Date.now() + 60000 });
-        setLinkState(cardEl, info.alive, msg);
-      });
     }
 
     /* ================================================================
@@ -746,18 +681,195 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
     }
 
     /* ================================================================
-       링크 생존 확인 및 카드 생성
+       링크 생존 확인 및 카드 생성 (비-API 직접 HTTP GET 스크래핑 방식)
     ================================================================ */
     const _linkCheckCache = new Map();
+    const _linkRequests = new Map();
 
-    function setLinkState(el, alive, msg) {
+    function classifyDirectResponse(hostname, url, response) {
+      if ([404, 410].includes(response.status)) {
+        return { alive: false, msg: '링크 만료' };
+      }
+      if (response.status < 200 || response.status >= 400) {
+        return { alive: null, msg: `확인 불가 (HTTP ${response.status})` };
+      }
+
+      const text = response.responseText || '';
+
+      // KIO / Kiosk
+      if (['kio.ac', 'kiosk.ac'].includes(hostname)) {
+        if (/컬렉션을 찾을 수 없음|만료되었습니다|존재하지 않는 컬렉션|collection not found/i.test(text)) {
+          return { alive: false, msg: '링크 만료' };
+        }
+        try {
+          const doc = new DOMParser().parseFromString(text, 'text/html');
+          const script = doc.querySelector('script[data-sveltekit-fetched][data-url="https://api.kio.ac/v0/collection/get"]');
+          if (script) {
+            const result = JSON.parse(script.textContent);
+            const bytes = Uint8Array.from(atob(result.body), c => c.charCodeAt(0));
+            let offset = 0;
+            const read = (depth = 0) => {
+              if (depth > 8 || offset >= bytes.length) throw new Error('Invalid CBOR');
+              const header = bytes[offset++], type = header >> 5, extra = header & 31;
+              let size = extra;
+              if (extra === 24) {
+                if (offset >= bytes.length) throw new Error('Invalid CBOR length');
+                size = bytes[offset++];
+              } else if (extra >= 24) throw new Error('Unsupported CBOR length');
+              if (type === 3) {
+                if (offset + size > bytes.length) throw new Error('Invalid CBOR text');
+                const val = new TextDecoder('utf-8', { fatal: true }).decode(bytes.slice(offset, offset + size));
+                offset += size;
+                return val;
+              }
+              if (type === 5 && size <= 32) {
+                const val = Object.create(null);
+                for (let i = 0; i < size; i++) {
+                  const k = read(depth + 1);
+                  if (typeof k !== 'string') throw new Error('Invalid CBOR key');
+                  val[k] = read(depth + 1);
+                }
+                return val;
+              }
+              throw new Error('Unsupported CBOR type');
+            };
+            const body = read();
+            if (offset === bytes.length && result.status === 418 &&
+                body.code === 'collection:protector_not_provided' && body.meta?.type === 'password') {
+              return { alive: true, msg: '정상 (비번 필요)' };
+            }
+          }
+        } catch (e) {}
+        return { alive: true, msg: '링크 정상' };
+      }
+
+      // Gofile
+      if (hostname === 'gofile.io') {
+        if (/this content does not exist|not found|content deleted/i.test(text)) {
+          return { alive: false, msg: '링크 만료' };
+        }
+        return { alive: true, msg: '링크 정상' };
+      }
+
+      // UploadNow
+      if (hostname === 'uploadnow.io') {
+        if (/This link is expired or invalid/i.test(text)) {
+          return { alive: false, msg: '링크 만료' };
+        }
+        if (/This folder is password protected/i.test(text)) {
+          return { alive: true, msg: '정상 (비번 필요)' };
+        }
+        return { alive: true, msg: '링크 정상' };
+      }
+
+      // Transfer.it
+      if (hostname === 'transfer.it') {
+        if (/이런, 이 전송을 찾을 수 없습니다|transfer not found|expired/i.test(text)) {
+          return { alive: false, msg: '링크 만료' };
+        }
+        return { alive: true, msg: '링크 정상' };
+      }
+
+      // Workupload
+      if (hostname === 'workupload.com') {
+        if (/file not found|file has been deleted|파일을 찾을 수 없습니다/i.test(text)) {
+          return { alive: false, msg: '링크 만료' };
+        }
+        if (/passwordprotected|비밀번호/i.test(text)) {
+          return { alive: true, msg: '정상 (비번 필요)' };
+        }
+        return { alive: true, msg: '링크 정상' };
+      }
+
+      // Google Docs / Drive
+      if (['docs.google.com', 'drive.google.com'].includes(hostname)) {
+        if (/Sorry, the file you have requested does not exist|요청하신 파일이 존재하지 않습니다/i.test(text)) {
+          return { alive: false, msg: '링크 만료' };
+        }
+        if (/You need access|액세스 권한이 필요/i.test(text)) {
+          return { alive: null, msg: '접근 권한 필요' };
+        }
+        return { alive: true, msg: '링크 정상' };
+      }
+
+      // PikPak
+      if (hostname === 'mypikpak.com') {
+        if (/공유가 만료되었습니다|share (?:has )?expired/i.test(text)) {
+          return { alive: false, msg: '링크 만료' };
+        }
+        return { alive: true, msg: '링크 정상' };
+      }
+
+      // Mega
+      if (hostname === 'mega.nz') {
+        if (url.includes('#P!')) {
+          return { alive: null, msg: '비번 보호 링크' };
+        }
+        return { alive: true, msg: '링크 정상' };
+      }
+
+      return { alive: true, msg: '링크 정상' };
+    }
+
+    function setLinkState(el, alive, msg, checking = false) {
       el.classList.remove('lk-checking', 'lk-alive', 'lk-dead');
-      if (alive === true) el.classList.add('lk-alive');
+      el.setAttribute('aria-busy', String(checking));
+      if (checking) el.classList.add('lk-checking');
+      else if (alive === true) el.classList.add('lk-alive');
       else if (alive === false) el.classList.add('lk-dead');
       const sub = el.querySelector('.bl-sub');
       const arr = el.querySelector('.bl-arrow');
       if (sub) sub.textContent = msg;
-      if (arr) arr.textContent = alive === true ? '✓' : alive === false ? '!' : '↗';
+      if (arr) arr.textContent = checking ? '⟳' : alive === true ? '✓' : alive === false ? '!' : '↗';
+    }
+
+    function checkLink(url, cardEl) {
+      if (_linkCheckCache.has(url) && _linkCheckCache.get(url).expiresAt > Date.now()) {
+        const { alive, msg } = _linkCheckCache.get(url);
+        setLinkState(cardEl, alive, msg);
+        return;
+      }
+
+      let h = '';
+      try { h = new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return; }
+
+      if (h === 'jstrieb.github.io' && new URL(url).pathname.startsWith('/link-lock/') && new URL(url).hash) {
+        setLinkState(cardEl, null, h + ' · 암호화 링크 (만료 미확인)');
+        return;
+      }
+
+      if (_linkRequests.has(url)) {
+        _linkRequests.get(url).add(cardEl);
+        setLinkState(cardEl, null, h + ' · 확인 중', true);
+        return;
+      }
+      _linkRequests.set(url, new Set([cardEl]));
+      setLinkState(cardEl, null, h + ' · 확인 중', true);
+
+      const finish = info => {
+        const cards = _linkRequests.get(url);
+        if (!cards) return;
+        _linkRequests.delete(url);
+        const result = { ...info, msg: h + ' · ' + info.msg, expiresAt: Date.now() + 60000 };
+        if (info.alive !== null) _linkCheckCache.set(url, result);
+        for (const card of cards) setLinkState(card, result.alive, result.msg);
+      };
+
+      try {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: url,
+          timeout: 4500,
+          headers: {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'User-Agent': navigator.userAgent,
+          },
+          onload: response => finish(classifyDirectResponse(h, url, response)),
+          onerror: () => finish({ alive: null, msg: '연결 실패' }),
+          ontimeout: () => finish({ alive: null, msg: '응답 없음' }),
+          onabort: () => finish({ alive: null, msg: '조회 중단' }),
+        });
+      } catch (e) { finish({ alive: null, msg: '확인 불가' }); }
     }
 
     function makeLinkCard(rawUrl) {
@@ -791,7 +903,7 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         <span class="bl-arrow">↗</span>
       `;
 
-      checkRenderedLink(url, a);
+      checkLink(url, a);
       return a;
     }
 
