@@ -29,7 +29,63 @@ const testUrl = 'https://gofile.io/d/test1234';
 context.makeLinkCard(testUrl);
 assert.equal(requestSent.url, testUrl);
 assert.equal(requestSent.method, 'GET');
+assert.equal('User-Agent' in (requestSent.headers || {}), false);
 assert.equal(state.alive, null);
+requestSent.onload({ status: 200, responseText: '<html>files list</html>' });
+assert.equal(state.alive, true);
+
+// 1-2. 일시적 연결 실패(onerror) 발생 시 자동 재시도 후 성공 복구 및 호스트별 동시 요청 제한 확인
+{
+  const inFlight = [];
+  let maxKioConcurrent = 0;
+  let kioActive = 0;
+  const states = new Map();
+  let failOnce = true;
+
+  const qCtx = {
+    URL, Date, DONE_ATTR: 'data-b64d',
+    _linkCheckCache: new Map(),
+    _linkRequests: new Map(),
+    navigator: { userAgent: 'test-agent' },
+    setTimeout: fn => fn(),
+    GM_xmlhttpRequest: req => {
+      if (req.url.includes('kio.ac')) {
+        kioActive++;
+        if (kioActive > maxKioConcurrent) maxKioConcurrent = kioActive;
+      }
+      inFlight.push(req);
+    },
+    document: { createElement: () => ({ ...card }) },
+    getChannelCode: () => null,
+    setLinkState: (el, alive, msg) => { states.set(el, { alive, msg }); },
+    GM_openInTab: () => assert.fail('Must never open tabs'),
+  };
+  vm.runInNewContext(code, qCtx);
+
+  const cards = [];
+  for (let i = 1; i <= 8; i++) {
+    const c = { id: i, setAttribute() {}, classList: { remove() {}, add() {} }, querySelector() { return null; } };
+    cards.push(c);
+    qCtx.checkLink(`https://kio.ac/c/item${i}`, c);
+  }
+  assert.equal(maxKioConcurrent, 3, 'Per-host concurrency should cap at 3');
+
+  while (inFlight.length > 0) {
+    const req = inFlight.shift();
+    if (req.url.includes('kio.ac')) kioActive--;
+    if (failOnce && req.url === 'https://kio.ac/c/item1') {
+      failOnce = false;
+      req.onerror();
+    } else {
+      req.onload({ status: 200, responseText: '컬렉션 다운로드' });
+    }
+  }
+  assert.equal(maxKioConcurrent, 3);
+  for (const c of cards) {
+    assert.equal(states.get(c)?.alive, true);
+    assert.equal(states.get(c)?.msg, 'kio.ac · 링크 정상');
+  }
+}
 
 // 2. 응답 분류 로직 검증 (비-API 직접 HTML/텍스트 검사)
 const cases = [

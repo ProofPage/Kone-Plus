@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kone Plus
 // @namespace    https://github.com/ProofPage/Kone-Plus
-// @version      3.2.1
+// @version      3.2.2
 // @description  Base64 decoder for kone.gg and password auto-fill for file hosts (kio, mega, pikpak, gofile, transfer, etc.)
 // @author       Page
 // @homepageURL  https://github.com/ProofPage/Kone-Plus
@@ -892,30 +892,100 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
       _linkRequests.set(url, new Set([cardEl]));
       setLinkState(cardEl, null, h + ' · 확인 중', true);
 
+      enqueueLinkCheck({ h, url, attempt: 0 });
+    }
+
+    const _linkQueue = [];
+    const _hostInFlight = new Map();
+    let _totalInFlight = 0;
+    const MAX_TOTAL_CONCURRENT = 6;
+    const MAX_HOST_CONCURRENT = 3;
+    const MAX_LINK_RETRIES = 2;
+
+    function pumpLinkQueue() {
+      while (_totalInFlight < MAX_TOTAL_CONCURRENT && _linkQueue.length > 0) {
+        const idx = _linkQueue.findIndex(job => (_hostInFlight.get(job.h) || 0) < MAX_HOST_CONCURRENT);
+        if (idx === -1) break;
+        const [job] = _linkQueue.splice(idx, 1);
+        runLinkCheckJob(job);
+      }
+    }
+
+    function enqueueLinkCheck(job) {
+      if (_totalInFlight < MAX_TOTAL_CONCURRENT && (_hostInFlight.get(job.h) || 0) < MAX_HOST_CONCURRENT) {
+        runLinkCheckJob(job);
+      } else {
+        _linkQueue.push(job);
+      }
+    }
+
+    function runLinkCheckJob(job) {
+      const { h, url } = job;
+      _totalInFlight++;
+      _hostInFlight.set(h, (_hostInFlight.get(h) || 0) + 1);
+      let settled = false;
+
+      const release = () => {
+        if (settled) return false;
+        settled = true;
+        _totalInFlight = Math.max(0, _totalInFlight - 1);
+        const cur = (_hostInFlight.get(h) || 1) - 1;
+        if (cur <= 0) _hostInFlight.delete(h);
+        else _hostInFlight.set(h, cur);
+        return true;
+      };
+
       const finish = info => {
         const cards = _linkRequests.get(url);
-        if (!cards) return;
+        if (!cards) { pumpLinkQueue(); return; }
         _linkRequests.delete(url);
         const result = { ...info, msg: h + ' · ' + info.msg, expiresAt: Date.now() + 60000 };
         if (info.alive !== null) _linkCheckCache.set(url, result);
         for (const card of cards) setLinkState(card, result.alive, result.msg);
+        pumpLinkQueue();
+      };
+
+      const retryOrFinish = fallbackInfo => {
+        if (!release()) return;
+        if (job.attempt < MAX_LINK_RETRIES) {
+          const nextJob = { h, url, attempt: job.attempt + 1 };
+          const delay = 350 * nextJob.attempt;
+          if (typeof setTimeout === 'function') {
+            setTimeout(() => enqueueLinkCheck(nextJob), delay);
+            pumpLinkQueue();
+          } else {
+            enqueueLinkCheck(nextJob);
+          }
+          return;
+        }
+        finish(fallbackInfo);
       };
 
       try {
         GM_xmlhttpRequest({
           method: 'GET',
           url: url,
-          timeout: 4500,
+          timeout: 10000,
           headers: {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'User-Agent': navigator.userAgent,
           },
-          onload: response => finish(classifyDirectResponse(h, url, response)),
-          onerror: () => finish({ alive: null, msg: '연결 실패' }),
-          ontimeout: () => finish({ alive: null, msg: '응답 없음' }),
-          onabort: () => finish({ alive: null, msg: '조회 중단' }),
+          onload: response => {
+            const st = response ? response.status : 0;
+            if ((st === 0 || st === 429 || st >= 500) && job.attempt < MAX_LINK_RETRIES) {
+              retryOrFinish({ alive: null, msg: st ? `확인 불가 (HTTP ${st})` : '연결 실패' });
+              return;
+            }
+            if (!release()) return;
+            finish(classifyDirectResponse(h, url, response));
+          },
+          onerror: () => retryOrFinish({ alive: null, msg: '연결 실패' }),
+          ontimeout: () => retryOrFinish({ alive: null, msg: '응답 없음' }),
+          onabort: () => { if (!release()) return; finish({ alive: null, msg: '조회 중단' }); },
         });
-      } catch (e) { finish({ alive: null, msg: '확인 불가' }); }
+      } catch (e) {
+        if (!release()) return;
+        finish({ alive: null, msg: '확인 불가' });
+      }
     }
 
     function makeLinkCard(rawUrl) {
