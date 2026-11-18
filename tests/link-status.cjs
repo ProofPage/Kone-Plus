@@ -57,4 +57,6 @@ vm.runInNewContext(key, context);
 assert.equal(context._kchKey('https://uploadnow.io/f/dtZbqC1'), context._kchKey('https://uploadnow.io/en/share?utm_source=dtZbqC1'));
 assert.notEqual(context._kchKey('https://uploadnow.io/en/share?utm_source=dtZbqC1'), context._kchKey('https://uploadnow.io/en/share?utm_source=dt3bqC2'));
 assert.equal(context._kchKey('https://kio.ac/c/test?x=1'), 'https://kio.ac/c/test');
-console.log(`${cases.length + 3} link status cases and 3 channel mapping checks passed`);
+assert.equal(context._kchKey('https://www.mypikpak.com/s/VO12345'), context._kchKey('https://mypikpak.com/s/VO12345'));
+assert.equal(context._kchKey('https://mypikpak.com/s/VO12345/sub?s_code=1234'), 'https://mypikpak.com/s/VO12345');
+console.log(`${cases.length + 3} link status cases and 5 channel mapping checks passed`);

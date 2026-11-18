@@ -19,6 +19,7 @@
 // @match        *://uploadnow.io/*
 // @match        *://www.uploadnow.io/*
 // @match        *://mypikpak.com/*
+// @match        *://www.mypikpak.com/*
 // @match        *://jstrieb.github.io/*
 // @match        *://docs.google.com/*
 // @match        *://drive.google.com/*
@@ -90,9 +91,12 @@
         mode: 'formpost', triggerDelay: 1000,
       },
       'mypikpak.com': {
-        inputSel: '.el-input__inner[placeholder*="비밀번호"], .el-input__inner[placeholder*="password"], input.el-input__inner[type="password"]',
-        btnSel: '.pp-primary-button, .el-button--primary.pp-primary-button',
-        errorPat: [/incorrect/i, /wrong/i, /invalid/i, /일치하지 않/, /틀렸/],
+        inputSel: '.need-passcode .passcode-input input.el-input__inner, .need-passcode input.el-input__inner, .el-input__inner[placeholder*="비밀번호"], .el-input__inner[placeholder*="password" i], input.el-input__inner[type="password"]',
+        btnSel: '.need-passcode .pp-primary-button, .pp-primary-button, .el-button--primary.pp-primary-button',
+        scopeSel: '.need-passcode',
+        errorSel: '.message',
+        errorPat: [/incorrect/i, /wrong/i, /invalid/i, /잘못된 비밀번호/, /일치하지 않/, /틀렸/, /パスワードが正しくない/, /密码错误|密碼錯誤/, /incorrecta/i, /incorreta/i, /salah/i, /Неверный пароль|Невірний пароль/i],
+        waitEnabledBtn: true,
         mode: 'generic', triggerDelay: 1500, btnDelay: 500,
       },
       'jstrieb.github.io': {
@@ -184,6 +188,10 @@
           const id = x.pathname.match(/^\/f\/([^/]+)/)?.[1] ||
             (/^\/(?:[a-z]{2}\/)?share\/?$/.test(x.pathname) ? x.searchParams.get('utm_source') : null);
           if (id) return 'https://uploadnow.io/f/' + id;
+        }
+        if (x.hostname.replace(/^www\./, '') === 'mypikpak.com') {
+          const id = x.pathname.match(/^\/s\/([^/]+)/)?.[1];
+          if (id) return 'https://mypikpak.com/s/' + id;
         }
         if ((x.hostname === 'mega.nz' && /^#(?:!|F!|P!)/.test(x.hash)) || x.hostname === 'jstrieb.github.io') {
           return x.origin + x.pathname + x.hash;
@@ -1187,7 +1195,10 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
     /* ================================================================
        다운로드 사이트 비밀번호 자동입력 실행부
     ================================================================ */
-    const siteCfg = host === 'uploadnow.io' && !/^\/(?:f\/|(?:[a-z]{2}\/)?share(?:\/|$))/.test(location.pathname) ? null : PW_SITES[host];
+    const siteCfg = (
+      (host === 'uploadnow.io' && !/^\/(?:f\/|(?:[a-z]{2}\/)?share(?:\/|$))/.test(location.pathname)) ||
+      (host === 'mypikpak.com' && !/^\/s\//.test(location.pathname))
+    ) ? null : PW_SITES[host];
     if (siteCfg) {
       function normText(t) { return String(t||'').replace(/\s+/g,' ').trim(); }
 
@@ -1219,11 +1230,12 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
 
       function getScope(input) {
         if (!input) return document.body;
-        const explicit = input.closest('[role="dialog"]') || input.closest('form') || input.closest('[class*="modal"]');
+        const explicit = (siteCfg.scopeSel && input.closest(siteCfg.scopeSel)) ||
+          input.closest('[role="dialog"]') || input.closest('form') || input.closest('[class*="modal"]');
         if (explicit) return explicit;
         for (let scope = input.parentElement; scope && scope !== document.body; scope = scope.parentElement) {
           const buttons = [...scope.querySelectorAll(siteCfg.btnSel + ', button')];
-          if (buttons.some(b => isVisible(b) && /^(확인|계속|ok|confirm|submit|enter|unlock|access|continue)$/i.test(normText(b.textContent)))) return scope;
+          if (buttons.some(b => isVisible(b) && /^(확인|계속|파일 보기|view files?|view file\(s\)|ok|confirm|submit|enter|unlock|access|continue)$/i.test(normText(b.textContent)))) return scope;
         }
         return input.parentElement || document.body;
       }
@@ -1232,6 +1244,13 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         // MEGA는 오류 문구를 DOM에 남기고 errored 클래스로 표시 여부를 관리함.
         if (host === 'mega.nz' && !input?.classList.contains('errored')) return '';
         const scope = getScope(input);
+        if (siteCfg.errorSel) {
+          for (const el of scope.querySelectorAll(siteCfg.errorSel)) {
+            if (!isVisible(el)) continue;
+            const t = normText(el.textContent);
+            if (t && t.length < 120) return t;
+          }
+        }
         for (const el of scope.querySelectorAll('div,p,span,strong,em,small,li')) {
           if (!isVisible(el)) continue;
           const t = normText(el.textContent);
@@ -1321,7 +1340,30 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
           const pws = getEffectivePwList();
           if (running || !first || triedInputs.has(first) || !pws.length || first.value) return;
           running = true;
+          let unlocked = !siteCfg.waitEnabledBtn;
           try {
+            if (siteCfg.waitEnabledBtn) {
+              const probePw = pws.find(v => String(v || '').trim());
+              if (!probePw) return;
+              const hydrateDeadline = Date.now() + 10000;
+              while (Date.now() < hydrateDeadline) {
+                const cur = getInputEl(siteCfg.inputSel);
+                if (!cur || cur.isConnected === false) return;
+                if (cur.value && cur.value !== probePw) return;
+                const sc = getScope(cur);
+                const btns = [...sc.querySelectorAll(siteCfg.btnSel)].filter(isVisible);
+                if (!btns.length || btns.some(b => !b.disabled)) { unlocked = true; break; }
+                setNativeValue(cur, probePw);
+                await pause(siteCfg.btnDelay || 300);
+                if (cur.isConnected === false || (cur.value && cur.value !== probePw)) return;
+                const btnsAfter = [...getScope(cur).querySelectorAll(siteCfg.btnSel)].filter(isVisible);
+                if (!btnsAfter.length || btnsAfter.some(b => !b.disabled)) { unlocked = true; break; }
+                // SSR 하이드레이션 전에는 입력값을 비워 두고 완료 후 다시 시도
+                setNativeValue(cur, '');
+                await pause(300);
+              }
+              if (!unlocked) return;
+            }
             for (const pw of pws) {
               const input = getInputEl(siteCfg.inputSel);
               if (!input) break;
@@ -1333,7 +1375,7 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
               let cleared = !findPwError(input, siteCfg.errorPat);
               const scope = getScope(input);
               const btn = [...scope.querySelectorAll(siteCfg.btnSel)].find(b => isVisible(b) && !b.disabled) ||
-                [...scope.querySelectorAll('button')].find(b => isVisible(b) && !b.disabled && /^(확인|ok|confirm|submit|enter|unlock|access)$/i.test(normText(b.textContent)));
+                [...scope.querySelectorAll('button')].find(b => isVisible(b) && !b.disabled && /^(확인|계속|파일 보기|view files?|view file\(s\)|ok|confirm|submit|enter|unlock|access|continue)$/i.test(normText(b.textContent)));
               if (btn) btn.click();
               else {
                 const form = input.closest('form');
@@ -1356,13 +1398,16 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
               if (!rejected) break; // 응답 지연을 비밀번호 오류로 추측하지 않음
             }
           } finally {
-            const current = getInputEl(siteCfg.inputSel);
-            if (current) triedInputs.add(current);
+            if (unlocked) {
+              const current = getInputEl(siteCfg.inputSel);
+              if (current) triedInputs.add(current);
+            }
             running = false;
           }
         }
         const gObs = new MutationObserver(tryPasswords);
         gObs.observe(document.documentElement, { childList: true, subtree: true });
+        document.addEventListener?.('visibilitychange', () => { if (!document.hidden) setTimeout(tryPasswords, 150); });
         setTimeout(tryPasswords, siteCfg.triggerDelay || 1500);
       }
 

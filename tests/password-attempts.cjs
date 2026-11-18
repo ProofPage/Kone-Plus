@@ -54,6 +54,68 @@ async function run(mode, result, initialValue = '') {
   assert.equal(context.getScope({ closest: () => null, parentElement: group }), panel);
   unlock.textContent = 'Continue';
   assert.equal(context.getScope({ closest: () => null, parentElement: group }), panel);
+  unlock.textContent = '파일 보기';
+  assert.equal(context.getScope({ closest: () => null, parentElement: group }), panel);
+  unlock.textContent = 'View File(s)';
+  assert.equal(context.getScope({ closest: () => null, parentElement: group }), panel);
+
+  const pikpakCtx = {
+    document: { body }, siteCfg: { btnSel: '.pp-primary-button', scopeSel: '.need-passcode' },
+    isVisible: el => el.visible, normText: text => text.trim(),
+  };
+  vm.runInNewContext(scopeCode, pikpakCtx);
+  assert.equal(pikpakCtx.getScope({ closest: sel => sel === '.need-passcode' ? panel : null, parentElement: group }), panel);
+
+  const findCode = source.slice(source.indexOf('      function findPwError('), source.indexOf('      // KIO 모드'));
+  let pikpakMsgVisible = true;
+  const errEl = { textContent: '잘못된 비밀번호입니다.' };
+  const findCtx = {
+    host: 'mypikpak.com',
+    siteCfg: { errorSel: '.message', errorPat: [/잘못된 비밀번호/] },
+    getScope: () => ({ querySelectorAll: sel => sel === '.message' && pikpakMsgVisible ? [errEl] : [] }),
+    isVisible: () => pikpakMsgVisible,
+    normText: text => String(text || '').replace(/\s+/g, ' ').trim(),
+  };
+  vm.runInNewContext(findCode, findCtx);
+  assert.equal(findCtx.findPwError({}, findCtx.siteCfg.errorPat), '잘못된 비밀번호입니다.');
+  pikpakMsgVisible = false;
+  assert.equal(findCtx.findPwError({}, findCtx.siteCfg.errorPat), '');
+
+  // waitEnabledBtn: 하이드레이션 전 disabled 버튼이 입력에 반응해 풀린 뒤 제출 및 재시도
+  {
+    let hydrated = false;
+    let input = { value: '', isConnected: true, closest: () => null };
+    let error = '', now = 0, observer;
+    const submitted = [];
+    const button = { disabled: true, textContent: '파일 보기', click() {
+      submitted.push(input.value);
+      if (input.value === 'first') error = '잘못된 비밀번호입니다.';
+      else input = null;
+      observer();
+    } };
+    const scope = { querySelectorAll: () => [button] };
+    const waitCtx = {
+      siteCfg: { mode: 'generic', inputSel: 'input', btnSel: '.pp-primary-button', errorPat: [/잘못된 비밀번호/], waitEnabledBtn: true },
+      getInputEl: () => input,
+      getEffectivePwList: () => ['first', 'second'],
+      setNativeValue: (el, value) => {
+        el.value = value;
+        if (hydrated) button.disabled = !value;
+        error = '';
+      },
+      findPwError: () => error,
+      getScope: () => scope, isVisible: () => true, normText: text => text,
+      submitViaEnter: () => assert.fail('Expected enabled PikPak button'),
+      Date: { now: () => (now += 1000) },
+      MutationObserver: class { constructor(callback) { observer = callback; } observe() {} },
+      document: { documentElement: {} },
+      setTimeout: callback => { hydrated = true; callback(); },
+    };
+    vm.runInNewContext(code, waitCtx);
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+    assert.deepEqual(submitted, ['first', 'second']);
+  }
+
   for (const mode of ['generic', 'gofile']) {
     assert.deepEqual(await run(mode, 'success'), ['first']);
     assert.deepEqual(await run(mode, 'reject'), ['first', 'second']);
@@ -61,5 +123,5 @@ async function run(mode, result, initialValue = '') {
     assert.deepEqual(await run(mode, 'pending', 'manual'), []);
     assert.deepEqual(await run(mode, 'retained-error'), ['first', 'second']);
   }
-  console.log('10 password attempt checks and 5 submit scope checks passed');
+  console.log('11 password attempt checks, 2 error checks, and 8 submit scope checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
