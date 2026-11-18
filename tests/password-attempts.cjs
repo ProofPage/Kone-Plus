@@ -81,6 +81,51 @@ async function run(mode, result, initialValue = '') {
   pikpakMsgVisible = false;
   assert.equal(findCtx.findPwError({}, findCtx.siteCfg.errorPat), '');
 
+  const unCtx = {
+    host: 'uploadnow.io',
+    siteCfg: { errorPat: [/invalid password/i] },
+    getScope: () => ({ querySelectorAll: () => [] }),
+    isVisible: () => true,
+    normText: text => String(text || '').trim(),
+    document: { querySelectorAll: () => [] },
+  };
+  vm.runInNewContext(findCode, unCtx);
+  assert.equal(unCtx.findPwError({ classList: { contains: c => c === 'is-invalid' } }, unCtx.siteCfg.errorPat), 'Invalid password');
+
+  // Gofile 스켈레톤 리마운트 시 이미 시도한 비밀번호를 건너뛰고 두 번째 비밀번호 시도
+  {
+    let input1 = { value: '', isConnected: true, closest: () => null };
+    let input2 = { value: '', isConnected: true, closest: () => null };
+    let curInput = input1, observer;
+    const submitted = [];
+    const button = { disabled: false, textContent: 'Unlock', click() {
+      submitted.push(curInput.value);
+      if (curInput === input1) curInput = null; // 스켈레톤 언마운트
+      else curInput = null;
+    } };
+    const scope = { querySelectorAll: () => [button] };
+    let now = 0;
+    const gfCtx = {
+      siteCfg: { mode: 'gofile', inputSel: 'input', btnSel: 'button', errorPat: [/incorrect/i] },
+      getInputEl: () => curInput,
+      getEffectivePwList: () => ['first', 'second'],
+      setNativeValue: (el, value) => { el.value = value; },
+      findPwError: () => '',
+      getScope: () => scope, isVisible: () => true, normText: text => text,
+      submitViaEnter: () => assert.fail('Expected Gofile button'),
+      Date: { now: () => (now += 1000) },
+      MutationObserver: class { constructor(callback) { observer = callback; } observe() {} },
+      document: { documentElement: {} },
+      setTimeout: callback => { callback(); },
+    };
+    vm.runInNewContext(code, gfCtx);
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    curInput = input2; // 오류와 함께 새 input 마운트
+    observer();
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    assert.deepEqual(submitted, ['first', 'second']);
+  }
+
   // waitEnabledBtn: 하이드레이션 전 disabled 버튼이 입력에 반응해 풀린 뒤 제출 및 재시도
   {
     let hydrated = false;

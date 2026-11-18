@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kone Plus
 // @namespace    https://github.com/ProofPage/Kone-Plus
-// @version      3.2.0
+// @version      3.2.1
 // @description  Base64 decoder for kone.gg and password auto-fill for file hosts (kio, mega, pikpak, gofile, transfer, etc.)
 // @author       Page
 // @homepageURL  https://github.com/ProofPage/Kone-Plus
@@ -24,8 +24,6 @@
 // @match        *://docs.google.com/*
 // @match        *://drive.google.com/*
 // @run-at       document-start
-// @inject-into  content
-// @sandbox      DOM
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -50,33 +48,33 @@
 
     const PW_SITES = {
       'uploadnow.io': {
-        inputSel: 'input.input_floating[type="password"]',
+        inputSel: 'input.input_floating[type="password"], input.input_floating',
         btnSel: 'button[class*="buttons_lg__"]',
         errorPat: [/incorrect|invalid password|wrong password/i],
         mode: 'generic', triggerDelay: 1500, btnDelay: 500,
       },
       'kio.ac': {
-        inputSel: '.overflow-auto.max-w-full.grow.p-1 input:nth-of-type(1)',
-        btnSel: '.flex.flex-col-reverse button:nth-of-type(1)',
-        errorPat: [/비밀번호가 일치하지 않/, /incorrect password/i, /invalid password/i],
+        inputSel: '[role="dialog"] input[data-slot="input"], [role="dialog"] input[type="password"], [role="dialog"] input[placeholder*="비밀번호"], [role="dialog"] input[placeholder*="password" i], .overflow-auto.max-w-full.grow.p-1 input:nth-of-type(1)',
+        btnSel: '[role="dialog"] button[data-submit], button[data-submit], .flex.flex-col-reverse button:nth-of-type(1)',
+        errorPat: [/비밀번호가 일치하지 않/, /incorrect password/i, /invalid password/i, /パスワードが違います/, /密码错误|密碼錯誤/],
         mode: 'kio',
       },
       'kiosk.ac': {
-        inputSel: '.input.shadow-xl.flex-grow',
-        btnSel: '.btn.btn-ghost.w-full.mt-2.rounded-md',
-        errorPat: [/비밀번호가 일치하지 않/, /incorrect/i],
+        inputSel: '[role="dialog"] input[data-slot="input"], [role="dialog"] input[type="password"], .input.shadow-xl.flex-grow, .overflow-auto.max-w-full.grow.p-1 input:nth-of-type(1)',
+        btnSel: '[role="dialog"] button[data-submit], button[data-submit], .btn.btn-ghost.w-full.mt-2.rounded-md, .flex.flex-col-reverse button:nth-of-type(1)',
+        errorPat: [/비밀번호가 일치하지 않/, /incorrect/i, /invalid password/i, /パスワードが違います/, /密码错误|密碼錯誤/],
         mode: 'kio',
       },
       'mega.nz': {
         inputSel: 'input[name="decrypt-link"], #password-decrypt-input',
         btnSel: 'button.decrypt-button, .mega-component.decrypt-button',
-        errorPat: [/invalid password/i, /incorrect/i, /wrong password/i, /암호가 틀렸/],
+        errorPat: [/invalid password/i, /incorrect/i, /wrong password/i, /암호가 틀렸/, /잘못된 암호/],
         mode: 'generic', triggerDelay: 2500, btnDelay: 500,
       },
       'transfer.it': {
         inputSel: 'input[name="msg-dialog-input"]',
         btnSel: 'button.it-button.xl-size.js-positive-btn',
-        errorPat: [/incorrect password/i, /wrong password/i, /invalid/i],
+        errorPat: [/incorrect password/i, /wrong password/i, /invalid/i, /비밀번호가 잘못|잘못된 비밀번호/],
         mode: 'transfer', triggerDelay: 1500,
       },
       'gofile.io': {
@@ -114,7 +112,7 @@
         'uploadnow.io': /This link is expired or invalid\./i,
         'kio.ac': /컬렉션을 찾을 수 없음|만료되었습니다|존재하지 않는 컬렉션/,
         'kiosk.ac': /컬렉션을 찾을 수 없음|만료되었습니다|존재하지 않는 컬렉션/,
-        'mypikpak.com': /공유가 만료되었습니다|share (?:has )?expired/i,
+        'mypikpak.com': /공유가 만료되었습니다|공유 파일을 찾을 수 없습니다|share (?:has )?expired|shared file cannot be found/i,
         'gofile.io': /this content does not exist/i,
         'transfer.it': /이런, 이 전송을 찾을 수 없습니다/,
         'docs.google.com': /Sorry, the file you have requested does not exist|요청하신 파일이 존재하지 않습니다/i,
@@ -210,14 +208,24 @@
     function setChannelForUrl(url, ch) {
       if (!ch || !url) return;
       const m = getChannelUrlMap();
-      m[_kchKey(url)] = { ch, ts: Date.now() };
+      const now = Date.now();
+      m[_kchKey(url)] = { ch, ts: now };
+      try { GM_setValue('lastChannel', JSON.stringify({ ch, ts: now })); } catch (e) {}
       const keys = Object.keys(m);
       if (keys.length > 300) keys.sort((a,b)=>(m[a].ts||0)-(m[b].ts||0)).slice(0, keys.length - 300).forEach(k => delete m[k]);
       try { GM_setValue('channelUrlMap', JSON.stringify(m)); } catch (e) {}
     }
     function getChannelForCurrentSite() {
-      const rec = getChannelUrlMap()[_kchKey(location.href)];
-      return rec ? rec.ch : null;
+      const m = getChannelUrlMap();
+      const k = _kchKey(location.href);
+      if (m[k]?.ch) return m[k].ch;
+      const trimmed = k.replace(/\/+$/, '');
+      if (m[trimmed]?.ch) return m[trimmed].ch;
+      if (host === 'kio.ac' || host === 'kiosk.ac') {
+        const alt = trimmed.replace(/^https:\/\/(kio|kiosk)\.ac/, (_, h) => `https://${h === 'kio' ? 'kiosk' : 'kio'}.ac`);
+        if (m[alt]?.ch) return m[alt].ch;
+      }
+      return null;
     }
     function getChannelPwMap() {
       try {
@@ -228,11 +236,34 @@
     }
     function saveChannelPwMap(m) { try { GM_setValue('channelPw', JSON.stringify(m)); } catch (e) {} }
 
+    function getChannelPwList(chMap, ch) {
+      if (!ch || !chMap) return [];
+      const norm = String(ch).replace(/^#+\s*/, '').trim().toLowerCase();
+      const out = [];
+      for (const [k, list] of Object.entries(chMap)) {
+        if (k === ch || String(k).replace(/^#+\s*/, '').trim().toLowerCase() === norm) {
+          if (Array.isArray(list)) out.push(...list);
+        }
+      }
+      return out;
+    }
+
     function getEffectivePwList() {
       const out = [];
+      const chMap = getChannelPwMap();
       const ch = getChannelForCurrentSite();
-      if (ch) { const list = getChannelPwMap()[ch]; if (Array.isArray(list)) out.push(...list); }
+      if (ch) out.push(...getChannelPwList(chMap, ch));
+      try {
+        const lastRaw = GM_getValue('lastChannel', null);
+        const last = lastRaw ? JSON.parse(lastRaw) : null;
+        if (last?.ch && (!last.ts || Date.now() - last.ts < 86400000)) {
+          out.push(...getChannelPwList(chMap, last.ch));
+        }
+      } catch (e) {}
       const g = getPwList(); if (Array.isArray(g)) out.push(...g);
+      for (const list of Object.values(chMap)) {
+        if (Array.isArray(list)) out.push(...list);
+      }
       return [...new Set(out.filter(Boolean))];
     }
 
@@ -613,11 +644,11 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
       // Meaningful content: contains Korean, URL, supported host domain, or readable sentence
       const hasKorean = /[가-힣]/.test(str);
       const hasUrl = /(?:https?:\/\/|www\.)\S/i.test(str);
-      const hasHost = /\b(kio\.ac|kiosk\.ac|mega\.nz|gofile\.io|mypikpak\.com|transfer\.it|workupload\.com)\b/i.test(str);
+      const hasHost = /\b(kio\.ac|kiosk\.ac|mega\.nz|gofile\.io|mypikpak\.com|transfer\.it|workupload\.com|uploadnow\.io|jstrieb\.github\.io|docs\.google\.com|drive\.google\.com)\b/i.test(str);
       if (hasKorean || hasUrl || hasHost) return true;
 
       // If it's plain text, avoid single English words that happen to decode into weird ASCII
-      return /^[A-Za-z0-9\s.,!?:;/@_#\-\+\(\)\[\]]+$/.test(str) && (str.includes(' ') || str.length <= 30);
+      return /^[A-Za-z0-9\s.,!?:;/@_#\-\+\(\)\[\]=]+$/.test(str) && (str.includes(' ') || str.length <= 30);
     }
 
     function b64DecodeCore(norm) {
@@ -642,8 +673,12 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
       let cur = str, best = null;
       for (let i = 0; i < 8; i++) {
         const d = decodeB64Once(cur);
-        if (!d || !isProbablyText(d)) break;
-        best = d; cur = d;
+        if (!d) break;
+        if (isProbablyText(d)) {
+          best = d;
+          if (/(?:https?:\/\/|www\.)\S/i.test(d) || /[가-힣]/.test(d)) break;
+        } else if (!looksLikeB64(d.replace(/\s+/g, ''))) break;
+        cur = d;
       }
       return best;
     }
@@ -802,8 +837,11 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
 
       // PikPak
       if (hostname === 'mypikpak.com') {
-        if (/공유가 만료되었습니다|share (?:has )?expired/i.test(text)) {
+        if (/공유가 만료되었습니다|공유 파일을 찾을 수 없습니다|share (?:has )?expired|shared file cannot be found/i.test(text)) {
           return { alive: false, msg: '링크 만료' };
+        }
+        if (/need-passcode|비밀번호를 입력해주세요|Please enter the Password/i.test(text)) {
+          return { alive: true, msg: '정상 (비번 필요)' };
         }
         return { alive: true, msg: '링크 정상' };
       }
@@ -1174,19 +1212,20 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
       const cur = location.href;
       if (cur !== _lastUrl) {
         _lastUrl = cur;
-        processedRaws.clear();
-        mountHeaderBtn();
-        schedule();
+        if (/kone\.gg/.test(location.hostname)) {
+          processedRaws.clear();
+          mountHeaderBtn();
+          schedule();
+        }
       }
     }
-    window.addEventListener('popstate', onUrlChange);
-    ['pushState', 'replaceState'].forEach(method => {
-      const orig = history[method];
-      history[method] = function (...args) { const r = orig.apply(this, args); onUrlChange(); return r; };
-    });
-    setInterval(onUrlChange, 300);
-
     if (/kone\.gg/.test(location.hostname)) {
+      window.addEventListener('popstate', onUrlChange);
+      ['pushState', 'replaceState'].forEach(method => {
+        const orig = history[method];
+        history[method] = function (...args) { const r = orig.apply(this, args); onUrlChange(); return r; };
+      });
+      setInterval(onUrlChange, 300);
       flush();
       observe();
       [150, 400, 1000].forEach(t => setTimeout(() => { mountHeaderBtn(); schedule(); }, t));
@@ -1235,14 +1274,15 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         if (explicit) return explicit;
         for (let scope = input.parentElement; scope && scope !== document.body; scope = scope.parentElement) {
           const buttons = [...scope.querySelectorAll(siteCfg.btnSel + ', button')];
-          if (buttons.some(b => isVisible(b) && /^(확인|계속|파일 보기|view files?|view file\(s\)|ok|confirm|submit|enter|unlock|access|continue)$/i.test(normText(b.textContent)))) return scope;
+          if (buttons.some(b => isVisible(b) && /^(확인|계속|파일 보기|복호화|파일 복호화|폴더 복호화|잠금\s*해제|view files?|view file\(s\)|decrypt|password unlock|ok|confirm|submit|enter|unlock|access|continue|確認|确认)$/i.test(normText(b.textContent)))) return scope;
         }
         return input.parentElement || document.body;
       }
 
       function findPwError(input, patterns) {
         // MEGA는 오류 문구를 DOM에 남기고 errored 클래스로 표시 여부를 관리함.
-        if (host === 'mega.nz' && !input?.classList.contains('errored')) return '';
+        if (host === 'mega.nz' && !input?.classList?.contains('errored')) return '';
+        if (host === 'uploadnow.io' && input?.classList?.contains('is-invalid')) return 'Invalid password';
         const scope = getScope(input);
         if (siteCfg.errorSel) {
           for (const el of scope.querySelectorAll(siteCfg.errorSel)) {
@@ -1256,6 +1296,13 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
           const t = normText(el.textContent);
           if (t && t.length < 120 && patterns.some(p => p.test(t))) return t;
         }
+        if (document.querySelectorAll) {
+          for (const el of document.querySelectorAll('[role="alert"], .Toastify__toast, [class*="toast"]')) {
+            if (!isVisible(el)) continue;
+            const t = normText(el.textContent);
+            if (t && t.length < 120 && patterns.some(p => p.test(t))) return t;
+          }
+        }
         return '';
       }
 
@@ -1264,7 +1311,10 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
         const KIO = { phase: 'idle', lastInputEl: null, lastSubmitAt: 0, lastAttemptAt: 0, queue: [], idx: 0, tried: new Set(), active: null, lastAdvKey: '', GRACE: 3000, FALLBACK: 2000, RETRY_MS: 50, RETRY_MAX: 8 };
 
         function kioGetBtn(scope) {
-          return [...(scope||document).querySelectorAll('button')].find(b => isVisible(b) && /^(확인|ok|confirm|submit|enter)$/i.test(normText(b.textContent))) || null;
+          const root = scope || document;
+          const bySubmit = [...root.querySelectorAll('button[data-submit]')].find(isVisible);
+          if (bySubmit) return bySubmit;
+          return [...root.querySelectorAll('button')].find(b => isVisible(b) && /^(확인|ok|confirm|submit|enter|確認|确认)$/i.test(normText(b.textContent))) || null;
         }
 
         function kioResetForNewModal(input) {
@@ -1334,10 +1384,11 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
       if (siteCfg.mode === 'gofile' || siteCfg.mode === 'generic') {
         let running = false;
         const triedInputs = new WeakSet();
+        const triedPws = new Set();
         const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
         async function tryPasswords() {
           const first = getInputEl(siteCfg.inputSel);
-          const pws = getEffectivePwList();
+          const pws = getEffectivePwList().filter(pw => !triedPws.has(pw));
           if (running || !first || triedInputs.has(first) || !pws.length || first.value) return;
           running = true;
           let unlocked = !siteCfg.waitEnabledBtn;
@@ -1372,10 +1423,11 @@ html.dark .bl-copy{border-right-color:rgba(255,255,255,.12);}
               setNativeValue(input, pw);
               await pause(siteCfg.btnDelay || 300);
               if (input.isConnected === false || input.value !== pw) return;
+              triedPws.add(pw);
               let cleared = !findPwError(input, siteCfg.errorPat);
               const scope = getScope(input);
               const btn = [...scope.querySelectorAll(siteCfg.btnSel)].find(b => isVisible(b) && !b.disabled) ||
-                [...scope.querySelectorAll('button')].find(b => isVisible(b) && !b.disabled && /^(확인|계속|파일 보기|view files?|view file\(s\)|ok|confirm|submit|enter|unlock|access|continue)$/i.test(normText(b.textContent)));
+                [...scope.querySelectorAll('button')].find(b => isVisible(b) && !b.disabled && /^(확인|계속|파일 보기|복호화|파일 복호화|폴더 복호화|잠금\s*해제|view files?|view file\(s\)|decrypt|password unlock|ok|confirm|submit|enter|unlock|access|continue|確認|确认)$/i.test(normText(b.textContent)));
               if (btn) btn.click();
               else {
                 const form = input.closest('form');

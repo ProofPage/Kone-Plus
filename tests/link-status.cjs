@@ -59,4 +59,18 @@ assert.notEqual(context._kchKey('https://uploadnow.io/en/share?utm_source=dtZbqC
 assert.equal(context._kchKey('https://kio.ac/c/test?x=1'), 'https://kio.ac/c/test');
 assert.equal(context._kchKey('https://www.mypikpak.com/s/VO12345'), context._kchKey('https://mypikpak.com/s/VO12345'));
 assert.equal(context._kchKey('https://mypikpak.com/s/VO12345/sub?s_code=1234'), 'https://mypikpak.com/s/VO12345');
-console.log(`${cases.length + 3} link status cases and 5 channel mapping checks passed`);
+
+// 다중(2중) Base64 디코딩 검증
+const b64Start = source.indexOf('    const DEC_STRICT =');
+const b64End = source.indexOf('    const B64_MATCH_RE =');
+const b64Ctx = { MIN_B64: 8, TextDecoder, Uint8Array, atob };
+vm.runInNewContext(source.slice(b64Start, b64End), b64Ctx);
+assert.equal(
+  b64Ctx.fullyDecode('YUhSMGNITTZMeTlyYVc4dVlXTXZZeTlqY2tNNWFsTmlVbHBJU0c1RU9UQk9XVlUyTm1WaQ=='),
+  'https://kio.ac/c/crC9jSbRZHHnD90NYU66eb'
+);
+assert.equal(
+  b64Ctx.fullyDecode('aHR0cHM6Ly9teXBpa3Bhay5jb20vcy9WUDZnbW1NYW85TDNrZFVyQzk1WkZxVkRvMg=='),
+  'https://mypikpak.com/s/VP6gmmMao9L3kdUrC95ZFqVDo2'
+);
+console.log(`${cases.length + 3} link status cases, 5 channel mapping checks, and 2 multi-layer Base64 checks passed`);
